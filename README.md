@@ -627,6 +627,32 @@ python apps/replay_reference.py path/to/reference_chunk.npz
 
 这个脚本目前比较简单，主要是 artifact 层的辅助入口。
 
+### 10.5 离线 reference replay
+
+入口：
+
+- [apps/replay_trajectory.py](./apps/replay_trajectory.py)
+
+**这是 runtime 接入前的离线检查里程碑，不是真实 sim2sim 已接通。**
+
+示例：
+
+```bash
+PYTHONPATH=src python apps/replay_trajectory.py \
+  --config configs/system/local_dev.yaml \
+  --text "walk forward slowly" \
+  --waypoints '[[0,0,0,0],[2,3,0,4]]' \
+  --replay-id demo_walk
+```
+
+该脚本会走完整 `FloodNet → bridge → MakeTrackingEasy → G1ReferenceChunk` 链路，
+并将所有中间结果导出为 inspectable artifact bundle。导出的 bundle 包含：
+
+- `command.json` — 输入命令与轨迹
+- `human_chunk.npz` — FloodNet 生成的 human motion (263D)
+- `reference_chunk.npz` — retarget 后的 G1 reference (root/dof/local body)
+- `metadata.json` — 形状、名字、耗时等诊断信息
+
 ## 11. HTTP / WebSocket 用法
 
 ### 11.1 创建 session
@@ -790,14 +816,17 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 ## 16. 下一步建议
 
-如果现在继续推进，这个顺序最合理：
+当前里程碑：离线 reference replay 已打通。`FloodNet → bridge → MakeTrackingEasy → G1ReferenceChunk` 全链路可在离线模式下导出可检查的 artifact bundle。
 
-1. 先实现 `motion_tracking` 的最小 source plugin
-2. 让真实 runtime 能消费 `G1ReferenceChunk`
-3. 再把 planner 从“同步按命令生成一次”推进到“后台持续流式补帧”
-4. 最后再处理更复杂的 prompt 切换和轨迹在线更新
+下一步推荐顺序：
 
-不要倒过来做。否则你会在还没固定 reference 语义时，就开始调在线行为和 tracker，调试成本会非常高。
+1. 离线验证：用多种手工轨迹跑 `replay_trajectory.py`，检查 reference bundle 语义质量
+2. 实现 `motion_tracking` 的最小 source plugin
+3. 让真实 runtime 能消费 `G1ReferenceChunk`
+4. 再把 planner 从”同步按命令生成一次”推进到”后台持续流式补帧”
+5. 最后再处理更复杂的 prompt 切换和轨迹在线更新
+
+不要跳过离线验证直接接 runtime。否则你会在还没固定 reference 语义时，就开始调在线行为和 tracker，调试成本会非常高。
 
 ## 17. 与 `motion_tracking` 的 patch 说明
 
