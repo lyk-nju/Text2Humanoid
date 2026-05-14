@@ -46,9 +46,9 @@
 
 这个工程默认以下三个 sibling repo 已存在：
 
-- `/home/yuankai/Text2Motion/FloodNet`
-- `/home/yuankai/Text2Motion/MakeTrackingEasy`
-- `/home/yuankai/Text2Motion/motion_tracking`
+- `FloodNet`
+- `MakeTrackingEasy`
+- `motion_tracking`
 
 设计原则是：
 
@@ -324,7 +324,7 @@ Text2Humanoid/
 - [sync_manager.py](./src/text2humanoid/runtime/sync_manager.py)
 - [fallback_policy.py](./src/text2humanoid/runtime/fallback_policy.py)
 
-当前 runtime 层还没有直接接入真正的 `motion_tracking` runtime，而是先把 reference source 这一层抽象出来。
+**重要：** 当前 runtime 层还没有直接接入真正的 `motion_tracking` runtime。`MotionTrackingClient` 是**内存 shim**，不是真实的 tracking policy 客户端。它的作用是先固定 runtime 接口契约，让上层 orchestrator 可以独立开发和测试，后续再把真实 `motion_tracking` source plugin 接入同一套接口。
 
 当前 `MotionTrackingClient` 的职责：
 
@@ -352,6 +352,8 @@ Text2Humanoid/
 
 路径：
 
+- [paths.py](./src/text2humanoid/infra/paths.py) — 统一路径管理，`get_root()` / `set_root()`
+- [config_loader.py](./src/text2humanoid/infra/config_loader.py) — 路径解析 + 组件构建
 - [artifact_store.py](./src/text2humanoid/infra/artifact_store.py)
 - [clocks.py](./src/text2humanoid/infra/clocks.py)
 - [logging.py](./src/text2humanoid/infra/logging.py)
@@ -488,9 +490,28 @@ HTTP PromptCommand
 
 ## 9. 配置文件说明
 
-### 9.1 `configs/system/`
+### 9.1 路径解析规则
 
-系统级配置：
+所有路径配置（包括 `artifacts_root`、`planner.config_path`、`retarget.xml_path`、`runtime.tracking_config`）按统一规则解析：
+
+1. 绝对路径（以 `/` 开头）原样使用
+2. 相对路径统一相对于 `root_path` 解析
+
+`root_path` 的优先级：
+
+1. YAML 中的 `root_path` 字段（如果显式设置为非 `auto` 的路径）
+2. 环境变量 `TEXT2MOTION_ROOT`
+3. 自动检测（从 `paths.py` 位置向上找到包含 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 的工作区根目录）
+
+`--config` 参数（CLI）独立解析：
+
+- 绝对路径原样使用
+- 相对路径相对于 `Text2Humanoid/` 项目根目录（而非 cwd）
+- 目标：从任意 cwd 启动 API server，行为一致
+
+### 9.2 `configs/system/`
+
+系统级配置（这是唯一运行时真正加载的配置入口）：
 
 - [local_dev.yaml](./configs/system/local_dev.yaml)
   - 本机开发用
@@ -505,48 +526,35 @@ HTTP PromptCommand
   - `retarget.apply_filter = false`
   - 单独的调试 artifacts 目录
 
-这些文件主要控制：
+关键字段：
 
-- API host/port
-- artifact 根目录
-- planner chunk 长度
-- retarget filter 开关
-- runtime buffer 水位和 control_hz
+| 字段 | 说明 |
+|------|------|
+| `root_path` | 工作区根路径，`auto` 表示自动检测 |
+| `artifacts_root` | artifact 输出目录（相对 root_path） |
+| `host` / `port` | API 服务监听地址 |
+| `planner.config_path` | FloodNet 模型配置路径（相对 root_path） |
+| `planner.chunk_frames` | 每次生成的帧数 |
+| `retarget.apply_filter` | 是否启用 Butterworth 低通滤波 |
+| `retarget.tgt_fps` | 输出目标 FPS（传给 MakeTrackingEasy） |
+| `retarget.xml_path` | G1 运动学模型 XML 路径（相对 root_path） |
+| `runtime.tracking_config` | motion_tracking tracking.yaml 路径（相对 root_path） |
+| `runtime.control_hz` | 控制频率 |
+| `runtime.low_watermark_frames` | buffer 低水位（低于此值触发 DEGRADED） |
+| `runtime.high_watermark_frames` | buffer 高水位（高于此值恢复 RUNNING） |
+| `runtime.future_horizon_frames` | 前瞻帧数 |
 
-### 9.2 `configs/floodnet/planner.yaml`
+### 9.3 `configs/floodnet/planner.yaml`
 
-Planner 级配置。
+FloodNet planner 模板配置（字段已整合到 system config 中）。
 
-当前关键字段：
+### 9.4 `configs/nmr/retarget.yaml`
 
-- `config_path`
-- `chunk_frames`
-- `warmup_text`
-- `feature_fps`
+NMR retarget 模板配置（字段已整合到 system config 中）。
 
-### 9.3 `configs/nmr/retarget.yaml`
+### 9.5 `configs/runtime/motion_tracking.yaml`
 
-Retarget 级配置。
-
-当前关键字段：
-
-- `apply_filter`
-- `src_fps`
-- `tgt_fps`
-- `xml_path`
-
-### 9.4 `configs/runtime/motion_tracking.yaml`
-
-Runtime 级配置。
-
-当前关键字段：
-
-- `tracking_config`
-- `controller_config`
-- `control_hz`
-- `low_watermark_frames`
-- `high_watermark_frames`
-- `future_horizon_frames`
+Runtime 模板配置（字段已整合到 system config 中）。
 
 ## 10. 命令行入口
 
@@ -559,13 +567,22 @@ Runtime 级配置。
 示例：
 
 ```bash
-cd /home/yuankai/Text2Motion/Text2Humanoid
-PYTHONPATH=src python apps/api_server.py --config configs/system/local_dev.yaml
+# 在任何目录下启动（推荐）
+PYTHONPATH=/path/to/Text2Humanoid/src \
+  python /path/to/Text2Humanoid/apps/api_server.py \
+  --config /path/to/Text2Humanoid/configs/system/local_dev.yaml
+
+# 或设置环境变量指定工作区
+TEXT2MOTION_ROOT=/path/to/workspace \
+  PYTHONPATH=/path/to/Text2Humanoid/src \
+  python /path/to/Text2Humanoid/apps/api_server.py \
+  --config /path/to/Text2Humanoid/configs/system/local_dev.yaml
 ```
 
 这个脚本会：
 
-- 读取系统配置
+- 解析 `--config` 路径（独立于 cwd）
+- 读取系统配置，解析 `root_path`
 - 创建 `ArtifactStore`
 - 创建 planner / retarget / adapter / runtime / fallback / coordinator / session manager
 - 启动 FastAPI + Uvicorn
@@ -579,7 +596,7 @@ PYTHONPATH=src python apps/api_server.py --config configs/system/local_dev.yaml
 示例：
 
 ```bash
-cd /home/yuankai/Text2Motion/Text2Humanoid
+cd /path/to/Text2Humanoid
 PYTHONPATH=src python apps/launch_session.py --text "walk forward slowly"
 ```
 
@@ -598,7 +615,7 @@ PYTHONPATH=src python apps/launch_session.py --text "walk forward slowly"
 示例：
 
 ```bash
-cd /home/yuankai/Text2Motion/Text2Humanoid
+cd /path/to/Text2Humanoid
 python apps/replay_reference.py path/to/reference_chunk.npz
 ```
 
@@ -718,7 +735,7 @@ artifacts/
 运行命令：
 
 ```bash
-/home/yuankai/.conda/envs/flooddiffusion/bin/python -m pytest /home/yuankai/Text2Motion/Text2Humanoid/tests -q
+PYTHONPATH=src python -m pytest tests/ -q
 ```
 
 当前测试通过状态：

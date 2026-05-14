@@ -23,6 +23,48 @@ JOINT_MAPPING = [
     21, 28,
 ]
 
+# NMR inference output joint names in MakeTrackingEasy model output order.
+# This is the left/right-interleaved "policy" order — NOT the XML kinematic tree order.
+# JOINT_MAPPING remaps from this order to dataset_joint_names order.
+_NMR_DOF_NAMES: list[str] = [
+    "left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint",
+    "left_hip_roll_joint", "right_hip_roll_joint", "waist_roll_joint",
+    "left_hip_yaw_joint", "right_hip_yaw_joint", "waist_pitch_joint",
+    "left_knee_joint", "right_knee_joint",
+    "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
+    "left_ankle_pitch_joint", "right_ankle_pitch_joint",
+    "left_shoulder_roll_joint", "right_shoulder_roll_joint",
+    "left_ankle_roll_joint", "right_ankle_roll_joint",
+    "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
+    "left_elbow_joint", "right_elbow_joint",
+    "left_wrist_roll_joint", "right_wrist_roll_joint",
+    "left_wrist_pitch_joint", "right_wrist_pitch_joint",
+    "left_wrist_yaw_joint", "right_wrist_yaw_joint",
+]
+
+
+def validate_joint_mapping(dataset_joint_names: list[str]) -> None:
+    """Assert JOINT_MAPPING correctly remaps NMR names to dataset names.
+
+    Raises AssertionError if the mapping would produce a silent mismatch.
+    """
+    if len(_NMR_DOF_NAMES) != len(JOINT_MAPPING):
+        raise AssertionError(
+            f"_NMR_DOF_NAMES length {len(_NMR_DOF_NAMES)} != JOINT_MAPPING length {len(JOINT_MAPPING)}"
+        )
+    if len(dataset_joint_names) != len(JOINT_MAPPING):
+        raise AssertionError(
+            f"dataset_joint_names length {len(dataset_joint_names)} != JOINT_MAPPING length {len(JOINT_MAPPING)}"
+        )
+    remapped = [None] * len(_NMR_DOF_NAMES)
+    for i, name in enumerate(_NMR_DOF_NAMES):
+        remapped[JOINT_MAPPING[i]] = name
+    if remapped != dataset_joint_names:
+        raise AssertionError(
+            "JOINT_MAPPING does not correctly remap NMR DOF names to dataset joint names. "
+            f"Got: {remapped}"
+        )
+
 
 def _add_paths() -> None:
     ensure_make_tracking_easy_paths()

@@ -8,6 +8,7 @@ from text2humanoid.retarget.fk_features import (
     build_world_features,
     load_dataset_joint_names,
     remap_nmr_dof_to_dataset,
+    validate_joint_mapping,
 )
 
 
@@ -20,6 +21,7 @@ class G1ReferenceAdapter:
         self.xml_path = xml_path
         self._tracking_config_path = tracking_config_path
         self.joint_names = load_dataset_joint_names(tracking_config_path)
+        validate_joint_mapping(self.joint_names)
 
     def from_nmr_result(
         self,

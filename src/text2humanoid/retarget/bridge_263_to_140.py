@@ -28,35 +28,48 @@ def _resample_linear(x: torch.Tensor, src_fps: float, tgt_fps: float) -> torch.T
     return out
 
 
+def _yaw_encoding_to_rot6d(yaw_encoding: torch.Tensor) -> torch.Tensor:
+    """Convert FloodNet yaw/heading encoding to 6D rotation representation.
+
+    FloodNet's recover_root_rot_pos outputs a 4-element encoding (cos, 0, sin, 0)
+    that encodes only yaw rotation around the Y axis, not a general quaternion.
+    This function builds the rotation matrix from just the cos/sin components.
+    """
+    _ensure_paths()
+    from utils.rotation_conversions import matrix_to_rotation_6d
+
+    cos_a = yaw_encoding[:, 0]
+    sin_a = yaw_encoding[:, 2]
+    zeros = torch.zeros_like(cos_a)
+    ones = torch.ones_like(cos_a)
+    rot = torch.stack(
+        [cos_a, zeros, sin_a,
+         zeros, ones, zeros,
+         -sin_a, zeros, cos_a],
+        dim=-1,
+    ).view(-1, 3, 3)
+    return matrix_to_rotation_6d(rot)
+
+
 def assemble_nmr_motion(
     joint_pos: torch.Tensor,
     root_quat_wxyz: torch.Tensor,
     src_fps: float = 20.0,
     tgt_fps: float = 30.0,
 ) -> torch.Tensor:
+    """Assemble 140D NMR input from joint positions and root yaw encoding.
+
+    Args:
+        joint_pos: (T, 22, 3) joint positions from FloodNet
+        root_quat_wxyz: (T, 4) yaw/heading encoding (cos, 0, sin, 0) —
+            NOT a general quaternion; only the w and z components encode yaw.
+        src_fps: source FPS (default 20 for FloodNet)
+        tgt_fps: target FPS (default 30 for MakeTrackingEasy)
+    """
     _ensure_paths()
-    from utils.rotation_conversions import matrix_to_rotation_6d
 
     t, n_joint, _ = joint_pos.shape
-    cos_a = root_quat_wxyz[:, 0]
-    sin_a = root_quat_wxyz[:, 2]
-    zeros = torch.zeros_like(cos_a)
-    ones = torch.ones_like(cos_a)
-    rot = torch.stack(
-        [
-            cos_a,
-            zeros,
-            sin_a,
-            zeros,
-            ones,
-            zeros,
-            -sin_a,
-            zeros,
-            cos_a,
-        ],
-        dim=-1,
-    ).view(t, 3, 3)
-    root_6d = matrix_to_rotation_6d(rot)
+    root_6d = _yaw_encoding_to_rot6d(root_quat_wxyz)
 
     joint_vel = torch.zeros_like(joint_pos)
     joint_vel[1:] = joint_pos[1:] - joint_pos[:-1]

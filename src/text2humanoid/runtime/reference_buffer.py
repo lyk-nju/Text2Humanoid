@@ -55,6 +55,14 @@ class ReferenceBuffer:
         return int(max(0, self._buffer.root_pos.shape[0] - self._cursor))
 
     def append_chunk(self, chunk: G1ReferenceChunk, overlap_frames: int = 0) -> None:
+        """Append a chunk with optional overlap cross-fade.
+
+        Cross-fade blends root_pos / root_rot / dof_pos / local_body_pos /
+        local_body_rot independently.  This is an approximation: after blending,
+        local_body_* may not be strictly FK-consistent with the blended root/dof.
+        For production use, the blended root_pos/root_rot/dof_pos should be
+        re-run through forward kinematics to regenerate local_body_*.
+        """
         if self._buffer is None:
             self._buffer = BufferedReference(
                 fps=chunk.fps,
@@ -94,6 +102,10 @@ class ReferenceBuffer:
                 alpha,
             )
 
+            # NOTE: blending local_body_* independently from root/dof is an
+            # approximation.  The blended local_body_pos and local_body_rot are
+            # only correct to first order.  For strict FK consistency, re-derive
+            # local_body_* from the blended root/dof via forward kinematics.
             alpha_body = alpha.reshape(-1, 1, 1)
             self._buffer.local_body_pos[-overlap:] = (
                 self._buffer.local_body_pos[-overlap:] * (1.0 - alpha_body)

@@ -7,6 +7,17 @@ from text2humanoid.runtime.sync_manager import SyncManager
 
 
 class MotionTrackingClient:
+    """In-memory reference buffer shim — NOT a real motion_tracking runtime.
+
+    This class accepts G1ReferenceChunks, manages per-session ReferenceBuffers,
+    and tracks frame consumption.  It does NOT connect to a real tracking
+    policy or simulation.  It exists to fix the runtime interface contract
+    so the real motion_tracking source plugin can implement the same protocol
+    later without changing the orchestrator.
+
+    Once the real motion_tracking source plugin lands, this class should be
+    replaced by (or delegate to) the actual runtime client.
+    """
     def __init__(self, control_hz: int = 50, future_horizon_frames: int = 16) -> None:
         self._buffers: dict[str, ReferenceBuffer] = {}
         self.sync = SyncManager(control_hz=control_hz, future_horizon_frames=future_horizon_frames)
