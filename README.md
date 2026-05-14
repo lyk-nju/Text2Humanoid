@@ -440,12 +440,12 @@ HTTP PromptCommand
 - `command_id`
 - `metadata`
 
-其中 `trajectory` 当前支持两类表达：
+其中 `trajectory` 当前支持两类表达，通过 `TrajectoryCondition` 的 `to_source()` 进入统一的 `TrajectorySource` 接口：
 
-- `waypoints`
-- `token_aligned_traj + token_mask`
+- `waypoints` — 高层来源，手工/UI 轨迹输入
+- `token_aligned_traj + token_mask` — 低层兼容来源，pre-computed FloodNet token 特征
 
-这两个接口都已经预留，但并不意味着当前上游已经把所有轨迹表达都高质量吃干抹净。这个区别要分清。
+轨迹编译链：`TrajectoryCondition → TrajectorySource → CanonicalTrajectory → FloodNet adapter`，所有来源最终收敛到同一个中间表示 `CanonicalTrajectory`。
 
 ### 8.2 `HumanMotionChunk`
 

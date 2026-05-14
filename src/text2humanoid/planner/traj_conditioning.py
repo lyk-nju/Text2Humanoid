@@ -5,8 +5,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from text2humanoid.contracts.commands import PromptCommand, TrajectoryCondition, TrajectoryPoint
-from text2humanoid.contracts.trajectory import CanonicalTrajectory
+from text2humanoid.contracts.commands import PromptCommand, TrajectoryPoint
+from text2humanoid.contracts.trajectory import CanonicalTrajectory, TrajectorySource, TrajectorySourceType
 
 _FLOODNET_TOKEN_FPS = 5
 _TRAJ_FEATURE_DIM = 4  # [x, z, cos(yaw), sin(yaw)]
@@ -157,13 +157,37 @@ def _empty_traj_payload(feature_length: int) -> dict[str, Any]:
     }
 
 
+def trajectory_source_to_canonical(source: TrajectorySource) -> CanonicalTrajectory:
+    """Convert a TrajectorySource to CanonicalTrajectory.
+
+    This is the single dispatch point for all external trajectory sources.
+    Every source type flows through this function before reaching FloodNet.
+    """
+    if source.source_type == TrajectorySourceType.CANONICAL.value and source.canonical is not None:
+        return source.canonical
+
+    if source.source_type == TrajectorySourceType.TOKEN_ALIGNED.value and source.token_aligned_traj is not None:
+        return token_aligned_to_canonical(
+            source.token_aligned_traj,
+            source.token_mask,
+        )
+
+    if source.source_type == TrajectorySourceType.WAYPOINTS.value and source.waypoints:
+        return waypoints_to_canonical(source.waypoints)
+
+    # Empty source or unrecognized type — return empty canonical
+    return _empty_canonical(0.0, 30)
+
+
 def build_floodnet_model_input(command: PromptCommand, feature_length: int) -> dict[str, Any]:
     """Build FloodNet model input dict from a PromptCommand.
 
-    Priority:
-    1. If token_aligned_traj is explicitly provided, use it directly (low-level).
-    2. If only waypoints are provided, compile through canonical trajectory.
-    3. Otherwise, produce a text-only payload (no trajectory conditioning).
+    The single pipeline is:
+      TrajectoryCondition → TrajectorySource → CanonicalTrajectory → FloodNet
+
+    TrajectoryCondition.to_source() converts the API-level fields (waypoints
+    or token_aligned_traj) into a unified TrajectorySource.  The planner
+    then compiles through canonical trajectory to FloodNet features.
     """
     payload: dict[str, Any] = {
         "feature_length": torch.tensor([feature_length], dtype=torch.long),
@@ -174,24 +198,13 @@ def build_floodnet_model_input(command: PromptCommand, feature_length: int) -> d
     if command.trajectory is None:
         return payload
 
-    traj_cond = command.trajectory
-
-    # Low-level path: caller provides explicit token-aligned features
-    if traj_cond.token_aligned_traj is not None:
-        traj = torch.tensor(traj_cond.token_aligned_traj, dtype=torch.float32).unsqueeze(0)
-        payload["traj_features"] = traj
-        payload["token_length"] = torch.tensor([traj.shape[1]], dtype=torch.long)
-        if traj_cond.token_mask is not None:
-            payload["token_mask"] = torch.tensor(traj_cond.token_mask, dtype=torch.float32).unsqueeze(0)
-        payload["trajectory_metadata"] = traj_cond.metadata
-        return payload
-
-    # Canonical path: compile from waypoints through canonical trajectory
-    if traj_cond.waypoints:
-        canonical = waypoints_to_canonical(traj_cond.waypoints)
-        traj_payload = canonical_to_floodnet_features(canonical, feature_length)
-        payload.update(traj_payload)
-        payload["trajectory_metadata"] = {**traj_cond.metadata, **canonical.metadata}
-        return payload
-
+    source = command.trajectory.to_source()
+    canonical = trajectory_source_to_canonical(source)
+    traj_payload = canonical_to_floodnet_features(canonical, feature_length)
+    payload.update(traj_payload)
+    payload["trajectory_metadata"] = {
+        "source_type": source.source_type,
+        **command.trajectory.metadata,
+        **canonical.metadata,
+    }
     return payload

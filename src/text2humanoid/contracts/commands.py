@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from text2humanoid.contracts.trajectory import TrajectorySource
 
 
 class TransitionMode(str, Enum):
@@ -24,10 +27,41 @@ class TrajectoryPoint:
 
 @dataclass(slots=True)
 class TrajectoryCondition:
+    """External trajectory input — the API-level contract.
+
+    waypoints:        hand-authored spatial waypoints (high-level source).
+    token_aligned_traj: pre-computed FloodNet token features (low-level compat).
+    token_mask:       per-token validity mask for token_aligned_traj.
+
+    Use to_source() to convert into the unified TrajectorySource before
+    feeding into the planner pipeline.
+    """
+
     waypoints: list[TrajectoryPoint] = field(default_factory=list)
     token_aligned_traj: list[list[float]] | None = None
     token_mask: list[float] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_source(self) -> TrajectorySource:
+        from text2humanoid.contracts.trajectory import TrajectorySource, TrajectorySourceType
+
+        if self.token_aligned_traj is not None:
+            return TrajectorySource(
+                source_type=TrajectorySourceType.TOKEN_ALIGNED.value,
+                token_aligned_traj=self.token_aligned_traj,
+                token_mask=self.token_mask,
+                metadata=self.metadata,
+            )
+        if self.waypoints:
+            return TrajectorySource(
+                source_type=TrajectorySourceType.WAYPOINTS.value,
+                waypoints=self.waypoints,
+                metadata=self.metadata,
+            )
+        return TrajectorySource(
+            source_type=TrajectorySourceType.WAYPOINTS.value,
+            metadata=self.metadata,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

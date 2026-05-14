@@ -1,9 +1,44 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from enum import Enum
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from text2humanoid.contracts.commands import TrajectoryPoint
+
+
+class TrajectorySourceType(str, Enum):
+    """External trajectory source categories.
+
+    WAYPOINTS:    hand-authored or UI-generated waypoints (high-level).
+    TOKEN_ALIGNED: pre-computed FloodNet token-aligned features (low-level compat).
+    CANONICAL:    already-normalized CanonicalTrajectory (pass-through).
+    """
+
+    WAYPOINTS = "waypoints"
+    TOKEN_ALIGNED = "token_aligned"
+    CANONICAL = "canonical"
+
+
+@dataclass(slots=True)
+class TrajectorySource:
+    """Unified external trajectory input — the single entry point before
+    CanonicalTrajectory.
+
+    All trajectory sources (waypoints, token-aligned features, pre-built
+    canonical trajectories) are wrapped in this container so the planner
+    layer only needs a single dispatch path.
+    """
+
+    source_type: str
+    waypoints: list[TrajectoryPoint] = field(default_factory=list)
+    token_aligned_traj: list[list[float]] | None = None
+    token_mask: list[float] | None = None
+    canonical: CanonicalTrajectory | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
