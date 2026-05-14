@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -15,6 +16,10 @@ from text2humanoid.evaluation.replay_checks import (
     validate_reference_chunk,
 )
 from text2humanoid.infra.artifact_store import ArtifactStore
+
+_APPS_DIR = Path(__file__).resolve().parent.parent / "apps"
+if str(_APPS_DIR) not in sys.path:
+    sys.path.insert(0, str(_APPS_DIR))
 
 
 def _make_reference(n: int = 6) -> G1ReferenceChunk:
@@ -136,3 +141,105 @@ def test_exported_metadata_contains_key_fields():
         assert len(meta["joint_names"]) == 29
         assert meta["timing"]["planner_ms"] == 100
         assert meta["metadata"]["source_type"] == "waypoints"
+
+
+# ---- 005 smoke: run_replay_pipeline wiring -----------------------------------
+
+from unittest import mock
+
+from text2humanoid.contracts.chunks import HumanMotionChunk, NMRInputChunk
+
+
+class _FakePlanner:
+    def generate_chunk(self, command, start_time):
+        return HumanMotionChunk(
+            chunk_id="fake", start_time=start_time, fps=20,
+            motion_263=np.zeros((4, 263), dtype=np.float32),
+            text=command.text, metadata={"device": "cpu"},
+        )
+
+
+class _FakeRetarget:
+    output_fps = 30
+    def retarget_chunk(self, nmr_chunk):
+        return {
+            "dof": np.zeros((6, 29), dtype=np.float32),
+            "root_trans": np.zeros((6, 3), dtype=np.float32),
+            "root_rot_quat": np.tile(np.array([[1, 0, 0, 0]], dtype=np.float32), (6, 1)),
+        }
+
+
+class _FakeAdapter:
+    def from_nmr_result(self, chunk_id, start_time, fps, result):
+        return _make_reference(6)
+
+
+class _FakeCoordinator:
+    planner = _FakePlanner()
+    retarget = _FakeRetarget()
+    adapter = _FakeAdapter()
+
+
+def _fake_nmr_input(chunk, tgt_fps=30):
+    return NMRInputChunk(
+        chunk_id=chunk.chunk_id, start_time=chunk.start_time,
+        fps=tgt_fps, motion_140=np.zeros((6, 140), dtype=np.float32),
+    )
+
+
+def test_run_replay_pipeline_with_waypoints_exports_trajectory_source():
+    from replay_trajectory import run_replay_pipeline
+    from text2humanoid.contracts.commands import PromptCommand, TrajectoryCondition, TrajectoryPoint
+
+    cmd = PromptCommand(
+        text="walk",
+        trajectory=TrajectoryCondition(
+            waypoints=[TrajectoryPoint(t=0, x=0, y=0, z=0), TrajectoryPoint(t=1, x=1, y=0, z=0)],
+        ),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ArtifactStore(tmp)
+        with mock.patch("replay_trajectory.human_chunk_to_nmr_input", _fake_nmr_input):
+            export_dir = run_replay_pipeline(cmd, _FakeCoordinator(), store, replay_id="smoke")
+        assert export_dir.exists()
+        assert (export_dir / "metadata.json").exists()
+        meta = json.loads(open(export_dir / "metadata.json").read())
+        ts = meta.get("metadata", {}).get("trajectory_source", {})
+        assert ts.get("source_type") == "waypoints"
+        assert ts.get("num_waypoints") == 2
+
+
+def test_run_replay_pipeline_with_token_trajectory_exports_source():
+    from replay_trajectory import run_replay_pipeline
+    from text2humanoid.contracts.commands import PromptCommand, TrajectoryCondition
+
+    cmd = PromptCommand(
+        text="walk",
+        trajectory=TrajectoryCondition(
+            token_aligned_traj=[[0, 0, 1, 0], [0.5, 0, 1, 0]],
+            token_mask=[1.0, 1.0],
+        ),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ArtifactStore(tmp)
+        with mock.patch("replay_trajectory.human_chunk_to_nmr_input", _fake_nmr_input):
+            export_dir = run_replay_pipeline(cmd, _FakeCoordinator(), store, replay_id="smoke_tok")
+        meta = json.loads(open(export_dir / "metadata.json").read())
+        ts = meta.get("metadata", {}).get("trajectory_source", {})
+        assert ts.get("source_type") == "token_aligned"
+        assert ts.get("token_count") == 2
+
+
+def test_run_replay_pipeline_no_trajectory():
+    from replay_trajectory import run_replay_pipeline
+    from text2humanoid.contracts.commands import PromptCommand
+
+    cmd = PromptCommand(text="stand")
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ArtifactStore(tmp)
+        with mock.patch("replay_trajectory.human_chunk_to_nmr_input", _fake_nmr_input):
+            export_dir = run_replay_pipeline(cmd, _FakeCoordinator(), store, replay_id="smoke_text")
+        assert export_dir.exists()
+        meta = json.loads(open(export_dir / "metadata.json").read())
+        ts = meta.get("metadata", {}).get("trajectory_source", {})
+        assert ts == {}  # no trajectory source when no trajectory
