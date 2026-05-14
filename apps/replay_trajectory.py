@@ -156,7 +156,7 @@ def main() -> None:
     print(f"Local body:   {meta['local_body_shape']}")
     print(f"Joint names:  {len(meta['joint_names'])} joints")
     print(f"Body names:   {len(meta['body_names'])} bodies")
-    print(f"Timing:       planner={timing['planner_ms']:.0f}ms  retarget={timing['retarget_ms']:.0f}ms  adapter={timing['adapter_ms']:.0f}ms")
+    print(f"Timing:       planner={meta['timing']['planner_ms']:.0f}ms  retarget={meta['timing']['retarget_ms']:.0f}ms  adapter={meta['timing']['adapter_ms']:.0f}ms")
 
 
 if __name__ == "__main__":
