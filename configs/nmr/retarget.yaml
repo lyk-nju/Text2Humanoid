@@ -1,4 +1,3 @@
 apply_filter: true
-src_fps: 20
 tgt_fps: 30
 xml_path: "MakeTrackingEasy/assets/g1_mocap_29dof.xml"

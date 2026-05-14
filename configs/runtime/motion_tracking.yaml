@@ -1,5 +1,4 @@
 tracking_config: "motion_tracking/sim2real/config/tracking.yaml"
-controller_config: "motion_tracking/sim2real/config/controller.yaml"
 control_hz: 50
 low_watermark_frames: 20
 high_watermark_frames: 60

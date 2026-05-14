@@ -33,7 +33,7 @@ class PipelineCoordinator:
         t0 = time.perf_counter()
         human_chunk = self.planner.generate_chunk(command, start_time=start_time)
         t1 = time.perf_counter()
-        nmr_chunk = human_chunk_to_nmr_input(human_chunk)
+        nmr_chunk = human_chunk_to_nmr_input(human_chunk, tgt_fps=self.retarget.output_fps)
         result = self.retarget.retarget_chunk(nmr_chunk)
         t2 = time.perf_counter()
         ref_chunk = self.adapter.from_nmr_result(

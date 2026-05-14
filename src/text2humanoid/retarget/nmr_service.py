@@ -17,8 +17,9 @@ def _add_nmr_path() -> None:
 
 
 class NMRRetargetService:
-    def __init__(self, apply_filter: bool = True) -> None:
+    def __init__(self, apply_filter: bool = True, tgt_fps: int = 30) -> None:
         self.apply_filter = bool(apply_filter)
+        self.tgt_fps = int(tgt_fps)
         self._loaded = False
         self._model = None
         self._smplx_mean = None
@@ -26,7 +27,10 @@ class NMRRetargetService:
         self._g1_mean = None
         self._g1_std = None
         self._device = None
-        self.output_fps = 30
+
+    @property
+    def output_fps(self) -> int:
+        return self.tgt_fps
 
     def _load(self) -> None:
         if self._loaded:

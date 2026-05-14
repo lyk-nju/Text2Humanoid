@@ -8,7 +8,10 @@ planner:
   warmup_text: "walk forward slowly"
 retarget:
   apply_filter: true
+  tgt_fps: 30
+  xml_path: "MakeTrackingEasy/assets/g1_mocap_29dof.xml"
 runtime:
+  tracking_config: "motion_tracking/sim2real/config/tracking.yaml"
   control_hz: 50
   low_watermark_frames: 24
   high_watermark_frames: 80

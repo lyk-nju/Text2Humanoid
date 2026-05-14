@@ -14,6 +14,11 @@ def _detect_root() -> Path:
 _root: Path | None = None
 
 
+def set_root(path: str | Path) -> None:
+    global _root
+    _root = Path(path).expanduser().resolve()
+
+
 def get_root() -> Path:
     global _root
     if _root is None:
