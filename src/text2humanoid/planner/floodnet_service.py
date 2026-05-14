@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -11,15 +10,15 @@ import torch
 from text2humanoid.contracts.chunks import HumanMotionChunk
 from text2humanoid.contracts.commands import PromptCommand
 from text2humanoid.infra.logging import get_logger
+from text2humanoid.infra.paths import get_floodnet_root
 from text2humanoid.planner.prompt_transition import resolve_chunk_frames
 from text2humanoid.planner.traj_conditioning import build_floodnet_model_input
 
 _LOG = get_logger("text2humanoid.planner")
-_ROOT = Path("/home/yuankai/Text2Motion/FloodNet")
 
 
 def _add_floodnet_path() -> None:
-    root_str = str(_ROOT)
+    root_str = str(get_floodnet_root())
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
 

@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import numpy as np
 import torch
 
 from text2humanoid.contracts.chunks import HumanMotionChunk, NMRInputChunk
+from text2humanoid.infra.paths import get_floodnet_root
 from text2humanoid.retarget.mte_imports import ensure_make_tracking_easy_paths
-
-_FLOODNET_ROOT = Path("/home/yuankai/Text2Motion/FloodNet")
 
 
 def _ensure_paths() -> None:
-    root_path = str(_FLOODNET_ROOT)
+    root_path = str(get_floodnet_root())
     if root_path not in sys.path:
         sys.path.insert(0, root_path)
     ensure_make_tracking_easy_paths()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import uvicorn
@@ -8,6 +9,7 @@ import yaml
 
 from text2humanoid.api import create_app
 from text2humanoid.infra.artifact_store import ArtifactStore
+from text2humanoid.infra.paths import get_root
 from text2humanoid.orchestrator.pipeline_coordinator import PipelineCoordinator
 from text2humanoid.orchestrator.session_manager import SessionManager
 from text2humanoid.planner.floodnet_service import FloodNetPlannerService
@@ -17,10 +19,19 @@ from text2humanoid.runtime.fallback_policy import FallbackPolicy
 from text2humanoid.runtime.motion_tracking_client import MotionTrackingClient
 
 
+def _resolve_root_path(cfg: dict) -> Path:
+    raw = cfg.get("root_path", "auto")
+    if raw == "auto" or raw is None:
+        return get_root()
+    return Path(os.path.expandvars(raw)).expanduser().resolve()
+
+
 def build_components(cfg: dict):
+    root = _resolve_root_path(cfg)
     artifact_store = ArtifactStore(cfg["artifacts_root"])
+    planner_config = str(root / cfg["planner"]["config_path"])
     planner = FloodNetPlannerService(
-        config_path=cfg["planner"]["config_path"],
+        config_path=planner_config,
         chunk_frames=cfg["planner"]["chunk_frames"],
     )
     retarget = NMRRetargetService(apply_filter=cfg["retarget"]["apply_filter"])

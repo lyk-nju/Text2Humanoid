@@ -14,10 +14,11 @@ from text2humanoid.retarget.fk_features import (
 class G1ReferenceAdapter:
     def __init__(
         self,
-        xml_path: str = "/home/yuankai/Text2Motion/MakeTrackingEasy/assets/g1_mocap_29dof.xml",
-        tracking_config_path: str = "/home/yuankai/Text2Motion/motion_tracking/sim2real/config/tracking.yaml",
+        xml_path: str | None = None,
+        tracking_config_path: str | None = None,
     ) -> None:
         self.xml_path = xml_path
+        self._tracking_config_path = tracking_config_path
         self.joint_names = load_dataset_joint_names(tracking_config_path)
 
     def from_nmr_result(

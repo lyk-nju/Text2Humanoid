@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import math
 import sys
-from pathlib import Path
 
 import numpy as np
 import torch
 import yaml
 
+from text2humanoid.infra.paths import get_make_tracking_easy_root, get_motion_tracking_root
 from text2humanoid.retarget.mte_imports import ensure_make_tracking_easy_paths
-
-_MOTION_TRACKING_ROOT = Path("/home/yuankai/Text2Motion/motion_tracking")
 
 JOINT_MAPPING = [
     0, 6, 12,
@@ -28,23 +26,27 @@ JOINT_MAPPING = [
 
 def _add_paths() -> None:
     ensure_make_tracking_easy_paths()
-    path = str(_MOTION_TRACKING_ROOT)
+    path = str(get_motion_tracking_root())
     if path not in sys.path:
         sys.path.insert(0, path)
 
 
 def load_dataset_joint_names(
-    tracking_config_path: str = "/home/yuankai/Text2Motion/motion_tracking/sim2real/config/tracking.yaml",
+    tracking_config_path: str | None = None,
 ) -> list[str]:
+    if tracking_config_path is None:
+        tracking_config_path = str(get_motion_tracking_root() / "sim2real/config/tracking.yaml")
     with open(tracking_config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return list(data["dataset_joint_names"])
 
 
 def load_kinematics_model(
-    xml_path: str = "/home/yuankai/Text2Motion/MakeTrackingEasy/assets/g1_mocap_29dof.xml",
+    xml_path: str | None = None,
     device: str = "cpu",
 ):
+    if xml_path is None:
+        xml_path = str(get_make_tracking_easy_root() / "assets/g1_mocap_29dof.xml")
     _add_paths()
     from utils.kinematics_model import KinematicsModel
 

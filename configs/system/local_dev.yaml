@@ -1,8 +1,9 @@
+root_path: auto
 artifacts_root: "./artifacts"
 host: "127.0.0.1"
 port: 8080
 planner:
-  config_path: "/home/yuankai/Text2Motion/FloodNet/configs/ldf_generate.yaml"
+  config_path: "FloodNet/configs/ldf_generate.yaml"
   chunk_frames: 40
   warmup_text: "stand still"
 retarget:

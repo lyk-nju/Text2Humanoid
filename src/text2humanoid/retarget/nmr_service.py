@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
 from text2humanoid.contracts.chunks import NMRInputChunk
-
-_NMR_ROOT = Path("/home/yuankai/Text2Motion/MakeTrackingEasy")
+from text2humanoid.infra.paths import get_make_tracking_easy_root
 
 
 def _add_nmr_path() -> None:
-    path = str(_NMR_ROOT)
+    path = str(get_make_tracking_easy_root())
     if path not in sys.path:
         sys.path.insert(0, path)
 

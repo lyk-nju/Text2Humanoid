@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-_NMR_ROOT = Path("/home/yuankai/Text2Motion/MakeTrackingEasy")
-_NMR_SRC = _NMR_ROOT / "src"
+from text2humanoid.infra.paths import get_make_tracking_easy_root
 
 
 def ensure_make_tracking_easy_paths() -> None:
-    for path in (str(_NMR_ROOT), str(_NMR_SRC)):
+    root = get_make_tracking_easy_root()
+    for path in (str(root), str(root / "src")):
         if path not in sys.path:
             sys.path.insert(0, path)

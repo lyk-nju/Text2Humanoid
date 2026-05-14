@@ -1,4 +1,4 @@
-config_path: "/home/yuankai/Text2Motion/FloodNet/configs/ldf_generate.yaml"
+config_path: "FloodNet/configs/ldf_generate.yaml"
 chunk_frames: 40
 warmup_text: "stand still"
 feature_fps: 20
