@@ -1,0 +1,14 @@
+artifacts_root: "./artifacts"
+host: "0.0.0.0"
+port: 8080
+planner:
+  config_path: "/home/yuankai/Text2Motion/FloodNet/configs/ldf_generate.yaml"
+  chunk_frames: 60
+  warmup_text: "walk forward slowly"
+retarget:
+  apply_filter: true
+runtime:
+  control_hz: 50
+  low_watermark_frames: 24
+  high_watermark_frames: 80
+  future_horizon_frames: 20

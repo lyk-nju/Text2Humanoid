@@ -1,0 +1,6 @@
+tracking_config: "/home/yuankai/Text2Motion/motion_tracking/sim2real/config/tracking.yaml"
+controller_config: "/home/yuankai/Text2Motion/motion_tracking/sim2real/config/controller.yaml"
+control_hz: 50
+low_watermark_frames: 20
+high_watermark_frames: 60
+future_horizon_frames: 16
