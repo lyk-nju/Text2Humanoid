@@ -34,10 +34,11 @@ def _blend_quat(q0: np.ndarray, q1: np.ndarray, alpha: np.ndarray) -> np.ndarray
 
 
 class ReferenceBuffer:
-    def __init__(self) -> None:
+    def __init__(self, xml_path: str | None = None) -> None:
         self._buffer: BufferedReference | None = None
         self._cursor = 0
         self._latest_chunk_id = ""
+        self._xml_path = xml_path
 
     def reset(self) -> None:
         self._buffer = None
@@ -57,11 +58,9 @@ class ReferenceBuffer:
     def append_chunk(self, chunk: G1ReferenceChunk, overlap_frames: int = 0) -> None:
         """Append a chunk with optional overlap cross-fade.
 
-        Cross-fade blends root_pos / root_rot / dof_pos / local_body_pos /
-        local_body_rot independently.  This is an approximation: after blending,
-        local_body_* may not be strictly FK-consistent with the blended root/dof.
-        For production use, the blended root_pos/root_rot/dof_pos should be
-        re-run through forward kinematics to regenerate local_body_*.
+        Cross-fade blends root_pos / root_rot / dof_pos in the overlap region.
+        local_body_* are NOT blended; instead they are regenerated from the
+        blended root/dof via forward kinematics in _refresh_local_body().
         """
         if self._buffer is None:
             self._buffer = BufferedReference(
@@ -88,6 +87,7 @@ class ReferenceBuffer:
         overlap = int(max(0, min(overlap_frames, self.buffer_frames, chunk.num_frames)))
         if overlap > 0:
             alpha = np.linspace(0.0, 1.0, overlap, dtype=np.float32).reshape(-1, 1)
+
             tail0 = self._buffer.root_pos[-overlap:]
             tail1 = chunk.root_pos[:overlap]
             self._buffer.root_pos[-overlap:] = tail0 * (1.0 - alpha) + tail1 * alpha
@@ -102,27 +102,48 @@ class ReferenceBuffer:
                 alpha,
             )
 
-            # NOTE: blending local_body_* independently from root/dof is an
-            # approximation.  The blended local_body_pos and local_body_rot are
-            # only correct to first order.  For strict FK consistency, re-derive
-            # local_body_* from the blended root/dof via forward kinematics.
-            alpha_body = alpha.reshape(-1, 1, 1)
-            self._buffer.local_body_pos[-overlap:] = (
-                self._buffer.local_body_pos[-overlap:] * (1.0 - alpha_body)
-                + chunk.local_body_pos[:overlap] * alpha_body
-            )
-            self._buffer.local_body_rot[-overlap:] = _blend_quat(
-                self._buffer.local_body_rot[-overlap:],
-                chunk.local_body_rot[:overlap],
-                alpha_body,
-            )
-
-        self._buffer.root_pos = np.concatenate([self._buffer.root_pos, chunk.root_pos[overlap:]], axis=0)
-        self._buffer.root_rot = np.concatenate([self._buffer.root_rot, chunk.root_rot[overlap:]], axis=0)
-        self._buffer.dof_pos = np.concatenate([self._buffer.dof_pos, chunk.dof_pos[overlap:]], axis=0)
-        self._buffer.local_body_pos = np.concatenate([self._buffer.local_body_pos, chunk.local_body_pos[overlap:]], axis=0)
-        self._buffer.local_body_rot = np.concatenate([self._buffer.local_body_rot, chunk.local_body_rot[overlap:]], axis=0)
+        self._buffer.root_pos = np.concatenate(
+            [self._buffer.root_pos, chunk.root_pos[overlap:]], axis=0
+        )
+        self._buffer.root_rot = np.concatenate(
+            [self._buffer.root_rot, chunk.root_rot[overlap:]], axis=0
+        )
+        self._buffer.dof_pos = np.concatenate(
+            [self._buffer.dof_pos, chunk.dof_pos[overlap:]], axis=0
+        )
+        self._buffer.local_body_pos = np.concatenate(
+            [self._buffer.local_body_pos, chunk.local_body_pos[overlap:]], axis=0
+        )
+        self._buffer.local_body_rot = np.concatenate(
+            [self._buffer.local_body_rot, chunk.local_body_rot[overlap:]], axis=0
+        )
         self._latest_chunk_id = chunk.chunk_id
+
+        if self._xml_path is not None:
+            self._refresh_local_body()
+
+    def _refresh_local_body(self) -> None:
+        if self._buffer is None or self._buffer.root_pos.shape[0] == 0:
+            return
+        from text2humanoid.retarget.fk_features import (
+            build_local_body_features,
+            build_world_features,
+        )
+
+        body_pos_w, body_rot_w, _ = build_world_features(
+            self._buffer.root_pos,
+            self._buffer.root_rot,
+            self._buffer.dof_pos,
+            self._xml_path,
+        )
+        local_body_pos, local_body_rot = build_local_body_features(
+            self._buffer.root_pos,
+            self._buffer.root_rot,
+            body_pos_w,
+            body_rot_w,
+        )
+        self._buffer.local_body_pos = local_body_pos
+        self._buffer.local_body_rot = local_body_rot
 
     def get_horizon(self, num_frames: int) -> dict[str, np.ndarray]:
         if self._buffer is None:

@@ -84,7 +84,7 @@
 
 - 避免直接通过 `MakeTrackingEasy/src` 顶层包导入而把完整训练栈和 `mmengine` 拉进来
 - runtime buffer 按 `session` 隔离，不再全局共享
-- cross-fade 不再只处理 `root_pos` 和 `dof_pos`，也处理 quaternion / local body features
+- cross-fade 对 `root_pos / root_rot / dof_pos` 做 blend，再从 blend 后状态通过 FK 重建 `local_body`，保证 FK 一致性
 - `SessionManager` 现在按 chunk end time 推进下一段起始时间，而不是错误地拿 runtime 当前 `sim_time` 直接当 chunk 排程时间
 
 当前还没有真正完成的部分：

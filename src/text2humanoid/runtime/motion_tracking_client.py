@@ -18,17 +18,18 @@ class MotionTrackingClient:
     Once the real motion_tracking source plugin lands, this class should be
     replaced by (or delegate to) the actual runtime client.
     """
-    def __init__(self, control_hz: int = 50, future_horizon_frames: int = 16) -> None:
+    def __init__(self, control_hz: int = 50, future_horizon_frames: int = 16, xml_path: str | None = None) -> None:
         self._buffers: dict[str, ReferenceBuffer] = {}
         self.sync = SyncManager(control_hz=control_hz, future_horizon_frames=future_horizon_frames)
         self._statuses: dict[str, RuntimeStatus] = {}
         self._consumed_frames: dict[str, int] = {}
+        self._xml_path = xml_path
 
     def ensure_session(self, session_id: str) -> None:
         if session_id not in self._statuses:
             self._statuses[session_id] = RuntimeStatus(session_id=session_id)
             self._consumed_frames[session_id] = 0
-            self._buffers[session_id] = ReferenceBuffer()
+            self._buffers[session_id] = ReferenceBuffer(xml_path=self._xml_path)
 
     def _buffer(self, session_id: str) -> ReferenceBuffer:
         self.ensure_session(session_id)

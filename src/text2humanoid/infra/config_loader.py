@@ -79,6 +79,7 @@ def build_components(cfg: dict):
     runtime = MotionTrackingClient(
         control_hz=int(runtime_cfg.get("control_hz", 50)),
         future_horizon_frames=int(runtime_cfg.get("future_horizon_frames", 16)),
+        xml_path=adapter_xml_path,
     )
     fallback = FallbackPolicy(
         low_watermark_frames=int(runtime_cfg.get("low_watermark_frames", 20)),
