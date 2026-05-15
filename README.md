@@ -927,13 +927,13 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 17. 下一步建议
 
-当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环。运行中的 session 已能连续接受三条及以上 command，并区分 `APPEND` / `REPLACE` 的最小行为。平滑 `CROSSFADE` 路径已经开始接入，但切换窗口的观测与导出还没有完全收口。
+当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。
 
 下一步推荐顺序：
 
-1. 继续把在线切换从“最小语义正确”推进到“真实平滑 transition 质量”
-2. 让 `CROSSFADE` 的 overlap / blend 窗口进入 status / artifact 观测
-3. 收紧切换质量 smoke，而不只验证内部 metadata
+1. 把 runtime 主线从 `floodnet_file` 目录轮询推进到真正在线 bridge
+2. 保持现有 source contract 和 fallback 路径稳定
+3. 补最小在线 bridge smoke
 4. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
 
 不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把核心系统主线继续搭完，再按 `Stage A -> Stage B -> Stage C` 做系统级验证。
@@ -954,4 +954,4 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换的最小主线跑通了，下一步的主战场是把切换质量做平滑，而不是过早切到系统级 pipeline testing。 
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换和平滑 crossfade 的最小主线跑通了，下一步的主战场是把 runtime 主线从 file polling 推进到真正在线 bridge，而不是过早切到系统级 pipeline testing。 
