@@ -120,6 +120,22 @@ class FloodNetFileBackend(RuntimeBackend):
             self._chunk_counts[session_id] = 0
             session_dir = self.output_dir / session_id
             session_dir.mkdir(parents=True, exist_ok=True)
+            self._write_chunk_index(session_id)
+
+    def _write_chunk_index(self, session_id: str) -> None:
+        import json
+        d = self.output_dir / session_id
+        chunks = sorted(
+            [p.name for p in d.glob("chunk_*.npz")],
+            key=lambda n: int(n.replace("chunk_", "").replace(".npz", "")),
+        )
+        manifest = {
+            "session_id": session_id,
+            "chunks": chunks,
+            "chunk_count": len(chunks),
+        }
+        with open(d / "chunk_index.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
 
     def push_reference_chunk(self, session_id: str, chunk: G1ReferenceChunk, overlap_frames: int = 4) -> None:
         self.ensure_session(session_id)
@@ -134,6 +150,7 @@ class FloodNetFileBackend(RuntimeBackend):
         np.savez(path, **arrays)
 
         self._chunk_counts[session_id] += 1
+        self._write_chunk_index(session_id)
         status = self._statuses[session_id]
         status.buffer_frames += chunk.num_frames
         status.latest_chunk_id = chunk.chunk_id

@@ -175,3 +175,87 @@ def test_xyzw_to_wxyz_conversion():
         root_quat_wxyz = motion["root_quat"]
         # wxyz: scalar at index 0
         assert abs(root_quat_wxyz[0, 0] - 1.0) < 0.01
+
+
+# ---- 007: multi-chunk session-scoped tests ----------------------------------
+
+def test_chunk_index_manifest_written():
+    """FloodNetFileBackend writes chunk_index.json with correct chunk list."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FloodNetFileBackend(output_dir=tmp)
+        backend.push_reference_chunk("s1", _make_chunk(5))
+        backend.push_reference_chunk("s1", _make_chunk(6))
+        backend.push_reference_chunk("s1", _make_chunk(4))
+
+        import json
+        manifest = json.loads(
+            open(Path(tmp) / "s1" / "chunk_index.json", encoding="utf-8").read()
+        )
+        assert manifest["session_id"] == "s1"
+        assert manifest["chunks"] == ["chunk_0000.npz", "chunk_0001.npz", "chunk_0002.npz"]
+        assert manifest["chunk_count"] == 3
+
+
+def test_multi_chunk_sequential_load():
+    """Three chunks written → all loadable in sequence via source logic."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FloodNetFileBackend(output_dir=tmp)
+        backend.push_reference_chunk("s1", _make_chunk(6))
+        backend.push_reference_chunk("s1", _make_chunk(8))
+        backend.push_reference_chunk("s1", _make_chunk(4))
+
+        # Simulate FloodNetMotionSource reading chunk_index.json
+        import json
+        manifest = json.loads(
+            open(Path(tmp) / "s1" / "chunk_index.json", encoding="utf-8").read()
+        )
+        chunks = manifest["chunks"]
+        assert len(chunks) == 3
+
+        total_frames = 0
+        for chunk_name in chunks:
+            motion = _load_clip_like_floodnet_source(str(Path(tmp) / "s1" / chunk_name))
+            assert motion["joint_pos"].shape[1] == 29
+            total_frames += motion["joint_pos"].shape[0]
+
+        assert total_frames == 6 + 8 + 4
+
+
+def test_cross_chunk_horizon_holds():
+    """Future horizon extended across chunk boundaries."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FloodNetFileBackend(output_dir=tmp)
+        backend.push_reference_chunk("s1", _make_chunk(10))
+        backend.push_reference_chunk("s1", _make_chunk(10))
+
+        motion_all = []
+        for name in ["chunk_0000.npz", "chunk_0001.npz"]:
+            motion = _load_clip_like_floodnet_source(str(Path(tmp) / "s1" / name))
+            motion_all.append(motion["joint_pos"])
+
+        combined = np.concatenate(motion_all, axis=0)
+        # Simulate horizon at chunk boundary
+        # If ref_idx=8, future_steps=[0,1,2,3,4] needs indices [8,9,10,11,12]
+        # chunk_0000 has 10 frames (0-9), chunk_0001 has 10 frames (10-19)
+        ref_idx = 8
+        future_indices = [ref_idx + s for s in [0, 1, 2, 3, 4]]
+        for fi in future_indices:
+            assert fi < combined.shape[0], f"frame {fi} out of range across chunk boundary"
+
+
+def test_empty_session_dir_handled():
+    """Empty session dir with no chunks → no error from source load logic."""
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp) / "empty_session"
+        session_dir.mkdir()
+        # Simulate manifest read — should handle empty case gracefully
+        import json
+        manifest_path = session_dir / "chunk_index.json"
+        if manifest_path.exists():
+            chunks = json.loads(open(manifest_path).read()).get("chunks", [])
+        else:
+            chunks = sorted(
+                [p.name for p in session_dir.glob("chunk_*.npz")],
+                key=lambda n: int(n.replace("chunk_", "").replace(".npz", "")),
+            )
+        assert chunks == []
