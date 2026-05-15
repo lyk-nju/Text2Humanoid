@@ -368,3 +368,27 @@ def test_crossfade_does_not_break_lifecycle():
         sm.stop_session(sid)
         st = json.loads(open(Path(tmp) / sid / "stream_status.json").read())
         assert st["phase"] == "done"
+
+
+def test_crossfade_overlap_observable_in_status():
+    """CROSSFADE overlap window is observable via RuntimeStatus.metadata."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="a", command_id="1"))
+            sm.push_command(sid, PromptCommand(text="b", command_id="2",
+                transition_mode="crossfade"))
+
+            status = sm.get_status(sid)
+            meta = status.metadata
+            # crossfade overlap should be visible in status
+            assert meta.get("crossfade_overlap", 0) > 0, \
+                f"crossfade_overlap not in status metadata: {meta}"
+            assert meta.get("transition_mode") == "crossfade"
+
+            # After refill, chunk was produced with crossfade overlap applied
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=1)
+            # Planner session metadata is consumed; status metadata persists
+            # showing the last transition used crossfade
+            assert status.metadata.get("crossfade_overlap", 0) > 0, \
+                "crossfade_overlap should remain in status for observability"
