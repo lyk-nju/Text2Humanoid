@@ -78,6 +78,7 @@
 - `G1ReferenceChunk` 适配逻辑
 - runtime reference buffer
 - planner-native session streaming
+- 运行中 session 的最小受控 command transition
 - file-based runtime source（`floodnet_file` backend → `motion_tracking` `FloodNetMotionSource`）
 - artifact 导出
 - demo 配置、demo smoke 和最小 runbook
@@ -94,7 +95,7 @@
 
 当前还没有真正完成的部分：
 
-- 还没有做受控的 prompt / trajectory 在线切换
+- 还没有做更复杂的多次 prompt / trajectory 在线切换策略
 - `FloodNetPlannerService` 当前仍然是 `model.generate()` 的 session 包装，不是最终形态的 planner-native 长驻生成服务
 - waypoint 到 FloodNet 真实轨迹条件的高质量注入还比较薄，当前更偏“接口预留”
 - 还没有把 planner / retarget / runtime 拆成独立后台进程和稳定 IPC
@@ -244,6 +245,10 @@ Text2Humanoid/
 - `push_command()` 是同步的
 - 每次命令会驱动一次 chunk 生成和一次 retarget
 - `next_start_time` 由上一 chunk 的结束时间推进
+- running session 上的第二条 command 已有最小 transition 语义：
+  - timeline 会记录 transition 边界
+  - planner session 会切到新的 active command
+  - refill loop 后续继续沿用新的 active command
 
 这套逻辑适合当前 scaffold 阶段，因为它先把数据边界和调度边界固定住了。后续如果要做真正后台 streaming loop，主要改这里和 runtime/source protocol。
 
@@ -791,7 +796,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `103 passed`
+- `109 passed`
 
 ## 14. 依赖与安装
 
@@ -922,16 +927,16 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 17. 下一步建议
 
-当前里程碑：fixed text + fixed trajectory demo 主线已闭环。`Text2Humanoid → floodnet_file backend → motion_tracking FloodNetMotionSource` 可以通过固定配置、标准启动链和 demo smoke 复现。
+当前里程碑：最小受控在线 command transition 已闭环。运行中的 session 已能接受第二条 command，并保持 planner-native refill 连续性。
 
 下一步推荐顺序：
 
-1. 在运行中的 session 上支持受控的第二条 command / trajectory 切换
-2. 让 planner session 和 transition mode 一起定义连续生成语义，而不只是持续 refill
-3. 再提升 waypoint → FloodNet 条件注入质量
-4. 最后再考虑 text-to-waypoint baseline、IPC 和更复杂环境任务
+1. 建立独立的 `pipeline_tests/` 目录和三段式 integration testing 骨架
+2. 先实现 `Stage A: 文本 + 轨迹 -> FloodNet 输出验证`
+3. 再进入 `Stage B: BABEL motion -> MakeTrackingEasy / retarget`
+4. 最后进入 `Stage C: reference -> motion_tracking 仿真验证`
 
-不要在 demo 刚闭环时立刻扩成复杂 UI 或多进程系统。当前更值钱的是先把在线切换语义收紧，否则后面所有展示都会建立在不稳定的 session 语义上。
+不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把三段式 pipeline testing 目录和执行边界定住，再逐段推进。
 
 ## 18. 与 `motion_tracking` 的 patch 说明
 
@@ -949,4 +954,4 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把 fixed demo 主线跑通了，下一步的主战场是在线切换语义，而不是继续补最小接线。 
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把最小在线切换主线跑通了，下一步的主战场是三段式 pipeline integration testing，而不是继续补最小接线。 
