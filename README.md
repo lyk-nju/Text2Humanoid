@@ -40,7 +40,7 @@
 - 服务形态：`长驻 HTTP + WebSocket`
 - 目标场景：`sim2sim`
 
-也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；同时在线 runtime bridge 的最小 skeleton 已开始落地，主服务配置入口也已经能选择 `socket` backend，但整条 runtime 主线还没有从 file-based source 完全切过去。
+也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；同时在线 runtime bridge 的最小 skeleton 已开始落地，主服务配置入口也已经能选择 `socket` backend，producer-side TCP smoke 也已经有了，但整条 runtime 主线还没有从 file-based source 完全切过去。
 
 ## 3. 与三个外部仓库的关系
 
@@ -80,7 +80,7 @@
 - planner-native session streaming
 - 运行中 session 的最小受控 command transition
 - file-based runtime source（`floodnet_file` backend → `motion_tracking` `FloodNetMotionSource`）
-- 在线 runtime bridge skeleton（`SocketBackend`，主服务已可选，但 runtime 消费侧仍未闭环）
+- 在线 runtime bridge skeleton（`SocketBackend`，主服务已可选，producer-side TCP smoke 已有，但 runtime 消费侧仍未闭环）
 - artifact 导出
 - demo 配置、demo smoke 和最小 runbook
 - 基础测试
@@ -797,7 +797,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `121 passed`
+- `126 passed`
 
 ## 14. 依赖与安装
 
@@ -933,11 +933,11 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 但它还没有完成两件关键事：
 
 - `motion_tracking` 侧没有匹配的在线 source 主线
-- 还没有真正覆盖在线 bridge 主路径的 smoke
+- 还没有真正覆盖 runtime 消费侧在线 bridge 主路径的 smoke
 
 ## 17. 下一步建议
 
-当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。runtime 主线则进入“在线 bridge 收口”阶段：skeleton 已出现，主服务已能切到 `socket` backend，但真实消费主线仍然是 file-based source。
+当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。runtime 主线则进入“在线 bridge 收口”阶段：skeleton 已出现，主服务已能切到 `socket` backend，producer-side TCP smoke 已有，但真实消费主线仍然是 file-based source。
 
 下一步推荐顺序：
 
