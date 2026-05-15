@@ -40,7 +40,7 @@
 - 服务形态：`长驻 HTTP + WebSocket`
 - 目标场景：`sim2sim`
 
-也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；同时在线 runtime bridge 的最小 skeleton 已开始落地，主服务配置入口也已经能选择 `socket` backend，producer-side TCP smoke 和 consumer-side 协议模拟都已经有了，`motion_tracking` 侧在线 consumer 和真实 runtime-consumer smoke 也已存在，但这条 smoke 在当前标准验证环境里还没有完全收口。
+也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；同时在线 runtime bridge 也已经最小闭环：主服务配置入口已能选择 `socket` backend，producer-side TCP smoke、consumer-side 协议模拟、`motion_tracking` 侧在线 consumer，以及真实 runtime-consumer smoke 都已经存在并能在当前标准验证环境里直接跑通。当前剩下的工程问题不再是“桥有没有接通”，而是“如何把 socket bridge 提升成默认 demo 主线，同时保留 file-based fallback”。
 
 ## 3. 与三个外部仓库的关系
 
@@ -80,7 +80,7 @@
 - planner-native session streaming
 - 运行中 session 的最小受控 command transition
 - file-based runtime source（`floodnet_file` backend → `motion_tracking` `FloodNetMotionSource`）
-- 在线 runtime bridge skeleton（`SocketBackend`，主服务已可选，producer-side TCP smoke 与 consumer-side 协议模拟已存在，`motion_tracking` 侧 `SocketFloodNetSource` 与真实 runtime-consumer smoke 已存在，但验证入口仍未完全收口）
+- 在线 runtime bridge（`SocketBackend` ↔ `SocketFloodNetSource` 最小主线已接通，producer-side TCP smoke、consumer-side 协议模拟，以及真实 runtime-consumer smoke 已可直接运行；`floodnet_file` 仍保留为 fallback / debug 路径）
 - artifact 导出
 - demo 配置、demo smoke 和最小 runbook
 - 基础测试
@@ -922,28 +922,32 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 后续一旦接真 runtime，上游 planner 和下游仿真/推理竞争资源会成为时延尖峰来源。
 
-### 16.5 当前 runtime 主线仍是 file-based source，不是最终在线 source
+### 16.5 在线 runtime bridge 已接通，但默认 demo 主线仍未切到 socket
 
-当前 fixed demo 已经通过 `floodnet_file` backend 接到了 `motion_tracking`，但它依赖文件目录语义和 chunk 轮询，还不是最终的网络 source / 进程内 runtime API。
+当前 fixed demo 仍然默认通过 `floodnet_file` backend 接到 `motion_tracking`，这条路径继续适合作为 fallback / debug 使用。
 
-当前代码里已经出现了最小在线 bridge skeleton：
+同时，最小在线 bridge 主线已经完成闭环：
 
 - [socket_backend.py](./src/text2humanoid/runtime/socket_backend.py)
+- `motion_tracking` 侧的 `SocketFloodNetSource`
+- producer-side TCP smoke
+- consumer-side 协议模拟
+- 真实 runtime-consumer smoke
 
-但它还没有完成两件关键事：
+也就是说，当前风险不再是“在线 source 还没接通”，而是：
 
-- 真实 runtime-consumer smoke 还没有在当前标准验证环境里直接跑通
-- `socket_floodnet` 这条路径的测试入口仍然和 `common.utils -> linuxfd` 耦合在一起
+- 默认 demo / runbook 还没有切到 socket 主线
+- file-based 与 socket 两条路径的主次关系还没有在文档和配置层完全收紧
 
 ## 17. 下一步建议
 
-当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。runtime 主线则进入“在线 bridge 收口”阶段：`socket` backend、`SocketFloodNetSource`、producer-side TCP smoke、consumer-side 协议模拟以及真实 runtime-consumer smoke 都已出现，但最后一层验证入口还需要和 `linuxfd` 依赖解耦，才能把这条主线彻底收口。
+当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。runtime 主线方面，最小在线 bridge 也已经闭环：`socket` backend、`SocketFloodNetSource`、producer-side TCP smoke、consumer-side 协议模拟以及真实 runtime-consumer smoke 都已经跑通。下一步的重点不再是“桥能不能工作”，而是“把 socket bridge 提升成默认 demo 主线，同时保留 file-based fallback”。
 
 下一步推荐顺序：
 
-1. 把 runtime 主线从 `floodnet_file` 目录轮询推进到真正在线 bridge
-2. 保持现有 source contract 和 fallback 路径稳定
-3. 补最小在线 bridge smoke
+1. 把 socket bridge 提升成默认 demo 主线
+2. 保持现有 source contract 和 `floodnet_file` fallback 路径稳定
+3. 为 socket 主线和 file-based fallback 都补最小回归保护
 4. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
 
 不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把核心系统主线继续搭完，再按 `Stage A -> Stage B -> Stage C` 做系统级验证。
@@ -964,4 +968,4 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换和平滑 crossfade 的最小主线跑通了，下一步的主战场是把 runtime 主线从 file polling 推进到真正在线 bridge，而不是过早切到系统级 pipeline testing。 
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade 以及最小在线 runtime bridge 主线跑通了，下一步的主战场是把 socket bridge 提升成默认 demo 主线，而不是过早切到系统级 pipeline testing。
