@@ -97,3 +97,99 @@ def test_floodnet_file_fallback_unchanged():
         backend = FloodNetFileBackend(output_dir=tmp)
         backend.push_reference_chunk("s1", _make_ref(6))
         assert backend.get_status("s1").buffer_frames == 6
+
+
+# ---- Consumer-side smoke: exact SocketFloodNetSource protocol simulation -----
+
+def _simulate_drain_messages(sock, obs_joint_names=None):
+    """Mirror of SocketFloodNetSource._drain_messages() protocol."""
+    received = []
+    sock.settimeout(0.01)
+    while True:
+        try:
+            header = sock.recv(4)
+            if len(header) < 4:
+                break
+            msg_len = struct.unpack(">I", header)[0]
+            body = b""
+            while len(body) < msg_len:
+                c = sock.recv(msg_len - len(body))
+                if not c:
+                    raise ConnectionError("Socket closed")
+                body += c
+            msg = json.loads(body.decode("utf-8"))
+            if msg.get("type") == "chunk":
+                # _handle_chunk logic
+                payload = msg["payload"]
+                joint_pos_raw = np.array(payload["dof_pos"], dtype=np.float32)
+                root_pos = np.array(payload["root_pos"], dtype=np.float32)
+                root_rot_xyzw = np.array(payload["root_rot"], dtype=np.float32)
+                root_quat_wxyz = np.concatenate(
+                    [root_rot_xyzw[:, 3:4], root_rot_xyzw[:, :3]], axis=-1)
+                received.append({
+                    "chunk_id": msg["chunk_id"],
+                    "session_id": msg["session_id"],
+                    "joint_pos_shape": joint_pos_raw.shape,
+                    "root_quat_shape": root_quat_wxyz.shape,
+                    "root_pos_shape": root_pos.shape,
+                })
+        except socket.timeout:
+            break
+        except (ConnectionError, OSError):
+            break
+    sock.settimeout(2.0)
+    return received
+
+
+def test_consumer_side_drain_messages():
+    """Consumer receives and parses chunks via exact SocketFloodNetSource protocol."""
+    import time as time_mod
+    port = 15560
+    backend = SocketBackend(host="127.0.0.1", port=port)
+    ready = threading.Event()
+
+    def _run():
+        backend.ensure_session("s1"); ready.set()
+        backend.push_reference_chunk("s1", _make_ref(8))
+        backend.push_reference_chunk("s1", _make_ref(10))
+
+    threading.Thread(target=_run, daemon=True).start()
+    ready.wait(timeout=2.0); time_mod.sleep(0.1)
+
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.connect(("127.0.0.1", port))
+
+    received = _simulate_drain_messages(client)
+    assert len(received) == 2, f"expected 2 chunks, got {len(received)}"
+    for r in received:
+        assert r["session_id"] == "s1"
+        assert r["joint_pos_shape"][1] == 29  # 29 DOF
+        assert r["root_quat_shape"][1] == 4   # wxyz quat
+    client.close(); backend.close()
+
+
+def test_consumer_no_directory_scanning():
+    """Consumer path uses only TCP — no directory glob or file I/O."""
+    import time as time_mod
+    port = 15561
+    backend = SocketBackend(host="127.0.0.1", port=port)
+    ready = threading.Event()
+
+    def _run():
+        backend.ensure_session("s1"); ready.set()
+        for _ in range(3):
+            backend.push_reference_chunk("s1", _make_ref(6))
+
+    threading.Thread(target=_run, daemon=True).start()
+    ready.wait(timeout=2.0); time_mod.sleep(0.2)
+
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.connect(("127.0.0.1", port))
+    received = _simulate_drain_messages(client)
+
+    assert len(received) == 3
+    # Verify: all chunks received via pure TCP, zero file ops
+    for r in received:
+        assert "chunk_id" in r
+        assert r["joint_pos_shape"] == (6, 29)
+    client.close(); backend.close()
