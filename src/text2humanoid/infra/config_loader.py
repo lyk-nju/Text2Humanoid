@@ -17,6 +17,7 @@ from text2humanoid.runtime.motion_tracking_client import (
     FloodNetFileBackend,
     MotionTrackingClient,
 )
+from text2humanoid.runtime.socket_backend import SocketBackend
 
 _PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -86,6 +87,13 @@ def build_components(cfg: dict):
         )
         backend = FloodNetFileBackend(
             output_dir=floodnet_output_dir,
+            control_hz=int(runtime_cfg.get("control_hz", 50)),
+        )
+        runtime = MotionTrackingClient(backend=backend)
+    elif backend_name == "socket":
+        backend = SocketBackend(
+            host=str(runtime_cfg.get("socket_host", "127.0.0.1")),
+            port=int(runtime_cfg.get("socket_port", 15555)),
             control_hz=int(runtime_cfg.get("control_hz", 50)),
         )
         runtime = MotionTrackingClient(backend=backend)

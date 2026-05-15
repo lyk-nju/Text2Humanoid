@@ -201,6 +201,30 @@ def test_build_components_with_floodnet_file_backend():
             set_root(str(saved))
 
 
+def test_build_components_with_socket_backend():
+    """Verify runtime.backend='socket' creates SocketBackend."""
+    from text2humanoid.infra.paths import get_root, set_root
+    from text2humanoid.infra.config_loader import build_components
+    from text2humanoid.runtime.socket_backend import SocketBackend
+
+    saved = get_root()
+    try:
+        cfg = {
+            "root_path": str(saved),
+            "artifacts_root": "./artifacts/test_socket",
+            "host": "127.0.0.1", "port": 9999,
+            "planner": {"config_path": "FloodNet/configs/ldf_generate.yaml"},
+            "retarget": {"apply_filter": False},
+            "runtime": {"backend": "socket", "socket_port": 15556, "control_hz": 50},
+        }
+        session_manager, _ = build_components(cfg)
+        client = session_manager._coordinator.runtime
+        assert isinstance(client.backend, SocketBackend)
+        assert client.backend.port == 15556
+    finally:
+        set_root(str(saved))
+
+
 def test_build_components_default_backend_is_shim():
     """Verify default runtime.backend is ShimBackend."""
     from text2humanoid.infra.paths import get_root, set_root
