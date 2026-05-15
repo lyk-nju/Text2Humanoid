@@ -1,8 +1,9 @@
 """Transition mode semantics for online command switching.
 
-APPEND    — new command takes effect after current chunk completes.
-REPLACE   — new command replaces active command immediately.
-CROSSFADE — reserved; currently behaves like APPEND.
+APPEND    — new command takes effect after current chunk completes (4-frame overlap).
+REPLACE   — new command replaces active command immediately (4-frame overlap).
+CROSSFADE — new command takes effect after current chunk with 12-frame overlap blend
+            for smoother transition boundary; larger overlap reduces boundary artifact.
 """
 
 from __future__ import annotations

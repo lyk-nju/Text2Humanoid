@@ -101,6 +101,9 @@ class SessionManager:
         ctx.status.metadata["transition_count"] = len(ctx.timeline.transitions)
         if driver is not None and driver.session is not None:
             ctx.status.metadata["pending_command_id"] = driver.session.pending_command.command_id if driver.session.has_pending else ""
+            crossfade = driver.session.metadata.get("crossfade_overlap", 0)
+            if crossfade:
+                ctx.status.metadata["crossfade_overlap"] = crossfade
         if trans_rec is not None:
             ctx.status.metadata["transition"] = {
                 "previous_command_id": trans_rec.previous_command_id,
