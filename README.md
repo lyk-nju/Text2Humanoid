@@ -797,7 +797,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `126 passed`
+- `128 passed`
 
 ## 14. 依赖与安装
 
