@@ -78,6 +78,7 @@ class FloodNetPlannerService:
         self.generate_chunk(dummy, start_time=0.0, feature_length=4)
 
     def reset(self) -> None:
+        self._driver.reset()
         if self._model is not None and hasattr(self._model, "init_generated"):
             try:
                 self._model.init_generated(30, batch_size=1)

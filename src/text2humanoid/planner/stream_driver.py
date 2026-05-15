@@ -45,7 +45,6 @@ class StreamPlannerDriver:
 
     def reset(self) -> None:
         self._session = None
-        self.planner.reset()
 
     def generate_next_chunk(self, feature_length: int | None = None) -> HumanMotionChunk | None:
         """Generate the next chunk in the current session.

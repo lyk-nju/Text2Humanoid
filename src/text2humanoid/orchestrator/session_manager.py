@@ -60,6 +60,11 @@ class SessionManager:
             return
         if can_transition(ctx.status.phase, SessionPhase.WARMING.value) and ctx.status.phase == SessionPhase.IDLE.value:
             ctx.status = self._coordinator.warmup(session_id, command.text)
+        # Start planner session for continuous streaming
+        if self._coordinator.planner is not None:
+            driver = getattr(self._coordinator.planner, "_driver", None)
+            if driver is not None and driver.session is None:
+                driver.start_session(command)
         ctx.status = self._coordinator.run_once(session_id, command, start_time=ctx.next_start_time)
         latest_chunk_end = float(ctx.status.metadata.get("latest_chunk_end_time", ctx.status.sim_time))
         ctx.next_start_time = max(ctx.next_start_time, latest_chunk_end)
