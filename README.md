@@ -931,12 +931,12 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 下一步推荐顺序：
 
-1. 建立独立的 `pipeline_tests/` 目录和三段式 integration testing 骨架
-2. 先实现 `Stage A: 文本 + 轨迹 -> FloodNet 输出验证`
-3. 再进入 `Stage B: BABEL motion -> MakeTrackingEasy / retarget`
-4. 最后进入 `Stage C: reference -> motion_tracking 仿真验证`
+1. 继续把在线切换从“最小闭环”推进到“稳定的多次 command / trajectory 序列”
+2. 明确 `APPEND / REPLACE / CROSSFADE` 的最小一致语义
+3. 再把 planner session 的长序列行为收紧
+4. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
 
-不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把三段式 pipeline testing 目录和执行边界定住，再逐段推进。
+不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把核心系统主线继续搭完，再按 `Stage A -> Stage B -> Stage C` 做系统级验证。
 
 ## 18. 与 `motion_tracking` 的 patch 说明
 
@@ -954,4 +954,4 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把最小在线切换主线跑通了，下一步的主战场是三段式 pipeline integration testing，而不是继续补最小接线。 
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把最小在线切换主线跑通了，下一步的主战场是继续把在线序列语义搭完整，而不是过早切到系统级 pipeline testing。 
