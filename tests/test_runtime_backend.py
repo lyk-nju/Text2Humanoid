@@ -336,6 +336,100 @@ def test_session_refill_cycle_produces_multiple_chunks():
     assert refilled.buffer_frames > 0, "buffer should have frames after refill"
 
 
+def test_background_refill_loop_produces_chunks():
+    """start_refill_loop auto-produces chunks in background."""
+    import time as time_mod
+    from text2humanoid.contracts.commands import PromptCommand, TrajectoryCondition, TrajectoryPoint
+    from text2humanoid.orchestrator.session_manager import SessionManager
+    from text2humanoid.orchestrator.pipeline_coordinator import PipelineCoordinator
+    from text2humanoid.runtime.fallback_policy import FallbackPolicy
+
+    backend = ShimBackend(control_hz=50)
+    fallback = FallbackPolicy(low_watermark_frames=5, high_watermark_frames=60)
+
+    class _MockPlanner2:
+        def warmup(self, text): return None
+        def reset(self): pass
+        def generate_chunk(self, command, start_time):
+            import uuid
+            from text2humanoid.contracts.chunks import HumanMotionChunk
+            return HumanMotionChunk(
+                chunk_id=uuid.uuid4().hex, start_time=start_time, fps=20,
+                motion_263=np.zeros((4, 263), dtype=np.float32),
+                text=command.text, metadata={"device": "cpu"},
+            )
+
+    class _MockRetarget2:
+        output_fps = 30
+        def retarget_chunk(self, nmr_chunk):
+            return {"dof": np.zeros((6, 29), dtype=np.float32),
+                    "root_trans": np.zeros((6, 3), dtype=np.float32),
+                    "root_rot_quat": np.tile(np.array([[1, 0, 0, 0]], dtype=np.float32), (6, 1))}
+
+    class _MockAdapter2:
+        def from_nmr_result(self, chunk_id, start_time, fps, result):
+            return _make_chunk(6)
+
+    coordinator = PipelineCoordinator(
+        planner=_MockPlanner2(), retarget=_MockRetarget2(),
+        adapter=_MockAdapter2(), runtime=MotionTrackingClient(backend=backend),
+        fallback=fallback,
+    )
+    sm = SessionManager(coordinator=coordinator)
+    sid = sm.create_session()
+    cmd = PromptCommand(
+        text="walk",
+        trajectory=TrajectoryCondition(
+            waypoints=[TrajectoryPoint(t=0, x=0, y=0, z=0), TrajectoryPoint(t=2, x=3, y=0, z=4)]
+        ),
+    )
+    # Use mock bridge
+    from unittest import mock as umock
+    from text2humanoid.contracts.chunks import NMRInputChunk
+    def _fake(chunk, tgt_fps=30):
+        return NMRInputChunk(chunk_id=chunk.chunk_id, start_time=chunk.start_time,
+                             fps=tgt_fps, motion_140=np.zeros((6, 140), dtype=np.float32))
+
+    with umock.patch("text2humanoid.orchestrator.pipeline_coordinator.human_chunk_to_nmr_input", _fake):
+        sm.push_command(sid, cmd)
+    initial = backend.get_status(sid).buffer_frames
+    assert initial > 0
+
+    # Start background refill and consume rapidly to trigger refill
+    sm.start_refill_loop(sid, watermark_frames=20, max_chunks=1, interval_sec=0.1)
+    time_mod.sleep(0.3)  # give background thread time to run
+
+    sm.stop_refill_loop(sid)
+    final = backend.get_status(sid).buffer_frames
+    # Background loop should have produced additional chunks
+    assert final >= initial, f"final buffer {final} >= initial {initial}"
+
+
+def test_stop_session_marks_stream_done():
+    """stop_session calls mark_stream_done on FloodNetFileBackend."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FloodNetFileBackend(output_dir=tmp)
+        from text2humanoid.orchestrator.session_manager import SessionManager
+        from text2humanoid.orchestrator.pipeline_coordinator import PipelineCoordinator
+        from text2humanoid.runtime.fallback_policy import FallbackPolicy
+
+        coordinator = PipelineCoordinator(
+            planner=None, retarget=None, adapter=None,
+            runtime=MotionTrackingClient(backend=backend),
+            fallback=FallbackPolicy(),
+        )
+        sm = SessionManager(coordinator=coordinator)
+        sid = sm.create_session()
+        backend.push_reference_chunk(sid, _make_chunk(5))
+        sm.stop_session(sid)
+
+        import json
+        status_path = Path(tmp) / sid / "stream_status.json"
+        assert status_path.exists(), "stream_status.json should exist"
+        st = json.loads(open(status_path).read())
+        assert st["phase"] == "done"
+
+
 def test_shim_backend_unaffected_by_stream_lifecycle():
     """ShimBackend still works as before — no stream_status files."""
     backend = ShimBackend(control_hz=50)

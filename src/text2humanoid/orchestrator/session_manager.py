@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -15,6 +17,8 @@ class SessionContext:
     timeline: SessionTimeline
     status: RuntimeStatus
     next_start_time: float = 0.0
+    refill_active: bool = False
+    refill_stop_event: threading.Event | None = None
     metadata: dict = field(default_factory=dict)
 
 
@@ -22,6 +26,20 @@ class SessionManager:
     def __init__(self, coordinator: PipelineCoordinator | None = None) -> None:
         self._sessions: dict[str, SessionContext] = {}
         self._coordinator = coordinator
+
+    def _mark_stream_done(self, session_id: str) -> None:
+        if self._coordinator is None:
+            return
+        backend = getattr(self._coordinator.runtime, "backend", None)
+        if backend is not None and hasattr(backend, "mark_stream_done"):
+            backend.mark_stream_done(session_id)
+
+    def _mark_stream_error(self, session_id: str) -> None:
+        if self._coordinator is None:
+            return
+        backend = getattr(self._coordinator.runtime, "backend", None)
+        if backend is not None and hasattr(backend, "mark_stream_error"):
+            backend.mark_stream_error(session_id)
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex
@@ -48,6 +66,7 @@ class SessionManager:
 
     def reset_session(self, session_id: str) -> None:
         ctx = self._sessions[session_id]
+        self.stop_refill_loop(session_id)
         ctx.timeline.commands.clear()
         ctx.next_start_time = 0.0
         if self._coordinator is not None:
@@ -56,6 +75,8 @@ class SessionManager:
         ctx.status.phase = SessionPhase.RESETTING.value
 
     def stop_session(self, session_id: str) -> None:
+        self.stop_refill_loop(session_id)
+        self._mark_stream_done(session_id)
         self._sessions[session_id].status.phase = SessionPhase.STOPPED.value
 
     def run_refill_cycle(self, session_id: str, watermark_frames: int = 20, max_chunks: int = 10) -> int:
@@ -82,3 +103,43 @@ class SessionManager:
             if ctx.status.phase in (SessionPhase.ERROR.value, SessionPhase.STOPPED.value):
                 break
         return chunks_produced
+
+    def _refill_thread(self, session_id: str, watermark_frames: int, max_chunks: int, interval_sec: float) -> None:
+        ctx = self._sessions.get(session_id)
+        if ctx is None:
+            return
+        while ctx.refill_active and not (ctx.refill_stop_event and ctx.refill_stop_event.is_set()):
+            try:
+                self.run_refill_cycle(session_id, watermark_frames=watermark_frames, max_chunks=max_chunks)
+            except Exception:
+                self._mark_stream_error(session_id)
+                ctx.status.phase = SessionPhase.ERROR.value
+                break
+            if ctx.status.phase in (SessionPhase.ERROR.value, SessionPhase.STOPPED.value):
+                break
+            # Wait, checking stop event periodically
+            if ctx.refill_stop_event:
+                ctx.refill_stop_event.wait(timeout=interval_sec)
+            else:
+                time.sleep(interval_sec)
+
+    def start_refill_loop(self, session_id: str, watermark_frames: int = 20, max_chunks: int = 1, interval_sec: float = 0.5) -> None:
+        ctx = self._sessions[session_id]
+        if ctx.refill_active:
+            return
+        ctx.refill_active = True
+        ctx.refill_stop_event = threading.Event()
+        t = threading.Thread(
+            target=self._refill_thread,
+            args=(session_id, watermark_frames, max_chunks, interval_sec),
+            daemon=True,
+        )
+        t.start()
+
+    def stop_refill_loop(self, session_id: str) -> None:
+        ctx = self._sessions.get(session_id)
+        if ctx is None or not ctx.refill_active:
+            return
+        ctx.refill_active = False
+        if ctx.refill_stop_event:
+            ctx.refill_stop_event.set()

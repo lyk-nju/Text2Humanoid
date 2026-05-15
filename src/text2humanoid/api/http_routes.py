@@ -69,6 +69,16 @@ def create_app(session_manager: SessionManager, artifact_store: ArtifactStore) -
         export_path = artifact_store.export_status_bundle(session_id, session_manager.get_status(session_id))
         return {"status": "ok", "path": str(export_path)}
 
+    @app.post("/sessions/{session_id}/refill/start")
+    async def start_refill(session_id: str) -> dict[str, str]:
+        session_manager.start_refill_loop(session_id)
+        return {"status": "ok", "session_id": session_id}
+
+    @app.post("/sessions/{session_id}/refill/stop")
+    async def stop_refill(session_id: str) -> dict[str, str]:
+        session_manager.stop_refill_loop(session_id)
+        return {"status": "ok", "session_id": session_id}
+
     @app.websocket("/ws/{session_id}")
     async def status_stream(ws: WebSocket, session_id: str) -> None:
         await hub.connect(session_id, ws)
