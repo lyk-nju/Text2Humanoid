@@ -1,0 +1,45 @@
+# Demo configuration: fixed text + fixed hand-authored trajectory.
+#
+# This config is designed for a stable, repeatable end-to-end demo
+# where the entire pipeline runs from a single command push:
+#
+#   Text2Humanoid (floodnet_file backend)
+#     → writes chunk_*.npz to floodnet_output_dir
+#     → motion_tracking FloodNetMotionSource consumes them
+#
+# Usage:
+#   1. Start API server:
+#      PYTHONPATH=src python apps/api_server.py --config configs/system/demo_fixed.yaml
+#   2. Create session:
+#      curl -X POST http://127.0.0.1:8080/sessions
+#   3. Push command:
+#      curl -X POST http://127.0.0.1:8080/sessions/<sid>/commands \
+#        -H "Content-Type: application/json" \
+#        -d '{"text":"walk forward slowly","trajectory":{"waypoints":[{"t":0,"x":0,"y":0,"z":0},{"t":5,"x":5,"y":0,"z":0}]}}'
+#   4. Start background refill:
+#      curl -X POST http://127.0.0.1:8080/sessions/<sid>/refill/start
+#   5. (In another terminal) start motion_tracking:
+#      cd /path/to/motion_tracking
+#      uv run src/deploy.py --sim2sim \
+#        --tracking-config config/tracking_floodnet.yaml
+
+root_path: auto
+artifacts_root: "./artifacts/demo"
+host: "127.0.0.1"
+port: 8080
+
+planner:
+  config_path: "FloodNet/configs/ldf_generate.yaml"
+  chunk_frames: 60            # ~3s at 20fps
+
+retarget:
+  apply_filter: true
+  tgt_fps: 30
+
+runtime:
+  backend: "floodnet_file"
+  floodnet_output_dir: "./artifacts/demo/floodnet_clips"
+  control_hz: 50
+  low_watermark_frames: 20
+  high_watermark_frames: 80
+  future_horizon_frames: 20

@@ -790,7 +790,88 @@ PYTHONPATH=src python -m pytest tests/ -q
 - 先在你现有的工作环境中运行
 - 等真实 `motion_tracking` source plugin 接上后，再决定最终环境管理策略
 
-## 15. 已知难点和风险
+## 15. Demo Runbook — Fixed Text + Fixed Trajectory
+
+### 15.1 Demo 范围
+
+- 固定文本（"walk forward slowly"）
+- 固定手工轨迹（直线 waypoints）
+- 单机单 GPU
+- session-scoped refill（后台自动补 chunk）
+- floodnet_file backend 写 NPZ → motion_tracking 消费
+
+### 15.2 最小启动顺序
+
+```bash
+# Terminal 1: 启动 Text2Humanoid API server
+cd /path/to/Text2Humanoid
+PYTHONPATH=src python apps/api_server.py --config configs/system/demo_fixed.yaml
+
+# Terminal 2: 创建 session 并推送命令
+curl -X POST http://127.0.0.1:8080/sessions
+# → {"session_id": "abc123..."}
+
+curl -X POST http://127.0.0.1:8080/sessions/abc123/commands \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "walk forward slowly",
+    "trajectory": {
+      "waypoints": [
+        {"t": 0.0, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"t": 5.0, "x": 5.0, "y": 0.0, "z": 0.0}
+      ]
+    }
+  }'
+
+# 启动后台 refill（自动持续补 chunk）
+curl -X POST http://127.0.0.1:8080/sessions/abc123/refill/start
+
+# Terminal 3: 启动 motion_tracking runtime
+cd /path/to/motion_tracking
+uv run src/deploy.py --sim2sim \
+  --tracking-config config/tracking_floodnet.yaml
+```
+
+### 15.3 最小验证步骤
+
+1. 检查 session 输出目录是否有多个 chunk：
+   ```bash
+   ls artifacts/demo/floodnet_clips/abc123/chunk_*.npz
+   ```
+
+2. 检查 chunk_index.json：
+   ```bash
+   cat artifacts/demo/floodnet_clips/abc123/chunk_index.json
+   # → {"chunk_count": N, "chunks": [...]}
+   ```
+
+3. 检查 stream 生命周期：
+   ```bash
+   cat artifacts/demo/floodnet_clips/abc123/stream_status.json
+   # → {"phase": "running"}
+   ```
+
+4. 停止 session 后验证 `done`：
+   ```bash
+   curl -X POST http://127.0.0.1:8080/sessions/abc123/stop
+   cat artifacts/demo/floodnet_clips/abc123/stream_status.json
+   # → {"phase": "done"}
+   ```
+
+### 15.4 配置说明
+
+Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.yaml)，关键参数：
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `planner.chunk_frames` | 60 | 每次生成 ~3s 动作 |
+| `runtime.backend` | `floodnet_file` | 写 NPZ 到文件系统 |
+| `runtime.floodnet_output_dir` | `./artifacts/demo/floodnet_clips` | NPZ 输出目录 |
+| `runtime.low_watermark_frames` | 20 | buffer 低于此触发 refill |
+
+---
+
+## 16. 已知难点和风险
 
 这是后续开发时必须持续记住的风险列表。
 
