@@ -40,7 +40,7 @@
 - 服务形态：`长驻 HTTP + WebSocket`
 - 目标场景：`sim2sim`
 
-也就是说，这个仓库首先要成为一个“在线生成与桥接服务”，然后再去对接真正的 `motion_tracking` runtime source plugin。
+也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；下一阶段再处理更复杂的在线切换和生成侧连续流式语义。
 
 ## 3. 与三个外部仓库的关系
 
@@ -64,7 +64,7 @@
 
 ## 4. 当前实现状态
 
-当前仓库已经不是空骨架，而是一个可编译、可测试、可启动 API 服务的第一版系统壳。
+当前仓库已经不是空骨架，而是一个可编译、可测试、可启动，并且能跑 fixed text + fixed trajectory demo 的系统壳。
 
 已经实现的部分：
 
@@ -77,7 +77,10 @@
 - `MakeTrackingEasy` 推理 wrapper
 - `G1ReferenceChunk` 适配逻辑
 - runtime reference buffer
+- planner-native session streaming
+- file-based runtime source（`floodnet_file` backend → `motion_tracking` `FloodNetMotionSource`）
 - artifact 导出
+- demo 配置、demo smoke 和最小 runbook
 - 基础测试
 
 已经修掉的关键工程问题：
@@ -86,15 +89,17 @@
 - runtime buffer 按 `session` 隔离，不再全局共享
 - cross-fade 对 `root_pos / root_rot / dof_pos` 做 blend，再从 blend 后状态通过 FK 重建 `local_body`，保证 FK 一致性
 - `SessionManager` 现在按 chunk end time 推进下一段起始时间，而不是错误地拿 runtime 当前 `sim_time` 直接当 chunk 排程时间
+- refill loop 已优先依赖 planner session，而不是简单重放最后一条 command
+- `motion_tracking` 已能通过 session-scoped chunk 目录消费 `Text2Humanoid` 输出的 fixed clip / multi-chunk reference
 
 当前还没有真正完成的部分：
 
-- 还没有把 `motion_tracking` 的真实 runtime source plugin 打进去
-- `FloodNetPlannerService` 当前走的是 `model.generate()` 包装，不是完整的异步持续后台流式服务
+- 还没有做受控的 prompt / trajectory 在线切换
+- `FloodNetPlannerService` 当前仍然是 `model.generate()` 的 session 包装，不是最终形态的 planner-native 长驻生成服务
 - waypoint 到 FloodNet 真实轨迹条件的高质量注入还比较薄，当前更偏“接口预留”
 - 还没有把 planner / retarget / runtime 拆成独立后台进程和稳定 IPC
 
-所以更准确地说，现在的 `Text2Humanoid` 是“可运行的 orchestrator scaffold”，不是“已经跑通 sim2sim 在线演示的最终系统”。
+所以更准确地说，现在的 `Text2Humanoid` 已经是“可复现 demo 的 orchestrator scaffold”，但还不是“支持复杂在线交互的最终系统”。
 
 ## 5. 项目结构
 
@@ -185,6 +190,10 @@ Text2Humanoid/
   - 查询当前状态
 - `POST /sessions/{session_id}/commands`
   - 推入一条文本/轨迹命令
+- `POST /sessions/{session_id}/refill/start`
+  - 启动后台 refill loop
+- `POST /sessions/{session_id}/refill/stop`
+  - 停止后台 refill loop
 - `POST /sessions/{session_id}/reset`
   - 重置 session
 - `POST /sessions/{session_id}/stop`
@@ -200,7 +209,7 @@ Text2Humanoid/
 当前 WebSocket 行为还比较轻量：
 
 - 建立连接时先发一条 `status`
-- 当 HTTP command / reset / stop 被调用时，广播事件
+- 当 HTTP command / refill / reset / stop 被调用时，广播事件
 
 这意味着它已经具备“控制面 + 基本观测面”的壳，但还不是最终实时事件流系统。
 
@@ -324,15 +333,27 @@ Text2Humanoid/
 - [sync_manager.py](./src/text2humanoid/runtime/sync_manager.py)
 - [fallback_policy.py](./src/text2humanoid/runtime/fallback_policy.py)
 
-**重要：** 当前 runtime 层还没有直接接入真正的 `motion_tracking` runtime。`MotionTrackingClient` 是**内存 shim**，不是真实的 tracking policy 客户端。它的作用是先固定 runtime 接口契约，让上层 orchestrator 可以独立开发和测试，后续再把真实 `motion_tracking` source plugin 接入同一套接口。
+**重要：** 当前 runtime 层已经不再只有内存 shim。`MotionTrackingClient` 现在是一个 facade，后面可以挂：
 
-当前 `MotionTrackingClient` 的职责：
+- `ShimBackend`
+  - 继续服务于单元测试和纯内存契约验证
+- `FloodNetFileBackend`
+  - 把 `G1ReferenceChunk` 按 session 写成 `chunk_*.npz`
+  - 由 `motion_tracking` 侧的 `FloodNetMotionSource` 消费
+
+也就是说，fixed demo 主线已经接上了最小真实 runtime source；但这仍然是 file-based bridge，不是最终的网络 source / 真正在线 streaming runtime API。
+
+当前 `MotionTrackingClient` / backend 层的职责：
 
 - 按 `session` 维护独立 reference buffer
 - 接受 `G1ReferenceChunk`
 - 维护 `buffer_frames`
 - 维护 `sim_time`
 - 支持 `consume_step()` 和 `reset_session()`
+- 对 file backend 额外维护：
+  - `chunk_index.json`
+  - `stream_status.json`
+  - session-scoped output dir
 
 当前 `ReferenceBuffer` 的职责：
 
@@ -343,10 +364,10 @@ Text2Humanoid/
 
 这里有两个重点：
 
-- 当前 client 是内存中的 shim，不是真实 runtime 进程 client
-- 但这层接口已经足够固定未来的 `motion_tracking` source plugin 设计
+- 当前 facade 同时支持 shim 和 file backend
+- 真实 `motion_tracking` 已能通过 `FloodNetMotionSource` 消费 file backend 产出的 chunk 序列
 
-也就是说，下一步真正接 `motion_tracking` 时，不应该重写上层 orchestrator，而是让真实 runtime 实现当前这套 source protocol 语义。
+也就是说，下一步不再是“从零接 runtime”，而是要在已接通的 file-based 主线之上，继续收敛在线切换和更稳定的连续生成语义。
 
 ### 6.7 `infra/`
 
@@ -756,7 +777,11 @@ artifacts/
 - `263D -> 140D` 桥接
 - reference adapter
 - reference buffer
-- 最小 end-to-end runtime shim
+- trajectory source / canonical trajectory
+- 离线 replay bundle
+- file backend / floodnet source
+- planner-native streaming
+- fixed text + fixed trajectory demo smoke
 
 运行命令：
 
@@ -766,7 +791,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `6 passed`
+- `103 passed`
 
 ## 14. 依赖与安装
 
@@ -875,41 +900,40 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 这是后续开发时必须持续记住的风险列表。
 
-### 15.1 最大算法风险：`263D -> 140D`
+### 16.1 最大算法风险：`263D -> 140D`
 
 这不是简单字段映射，而是跨动作表示域的桥接。即使代码正确，也可能语义不对、分布不对、效果不稳。
 
-### 15.2 `G1ReferenceChunk` 语义必须和 `motion_tracking` 数据集一致
+### 16.2 `G1ReferenceChunk` 语义必须和 `motion_tracking` 数据集一致
 
 如果 DOF 顺序、local body 定义、quaternion 顺序、body_names 有任何偏差，tracker 可能“能跑”，但行为会明显劣化。
 
-### 15.3 在线切换文本 + 轨迹是高风险动作
+### 16.3 在线切换文本 + 轨迹是高风险动作
 
 即使上游生成正常，hard switch 也容易导致下游 reference 不连续，所以 buffer 的 overlap / cross-fade 很关键。
 
-### 15.4 单机单 GPU 资源争用
+### 16.4 单机单 GPU 资源争用
 
 后续一旦接真 runtime，上游 planner 和下游仿真/推理竞争资源会成为时延尖峰来源。
 
-### 15.5 当前 runtime 还不是真接 `motion_tracking`
+### 16.5 当前 runtime 仍是 file-based source，不是最终在线 source
 
-现在的 `MotionTrackingClient` 是内存 shim，用来先固定接口。真正接下游时，必须把 source protocol 在 `motion_tracking` 里落地。
+当前 fixed demo 已经通过 `floodnet_file` backend 接到了 `motion_tracking`，但它依赖文件目录语义和 chunk 轮询，还不是最终的网络 source / 进程内 runtime API。
 
-## 16. 下一步建议
+## 17. 下一步建议
 
-当前里程碑：离线 reference replay 已打通。`FloodNet → bridge → MakeTrackingEasy → G1ReferenceChunk` 全链路可在离线模式下导出可检查的 artifact bundle。
+当前里程碑：fixed text + fixed trajectory demo 主线已闭环。`Text2Humanoid → floodnet_file backend → motion_tracking FloodNetMotionSource` 可以通过固定配置、标准启动链和 demo smoke 复现。
 
 下一步推荐顺序：
 
-1. 离线验证：用多种手工轨迹跑 `replay_trajectory.py`，检查 reference bundle 语义质量
-2. 实现 `motion_tracking` 的最小 source plugin
-3. 让真实 runtime 能消费 `G1ReferenceChunk`
-4. 再把 planner 从”同步按命令生成一次”推进到”后台持续流式补帧”
-5. 最后再处理更复杂的 prompt 切换和轨迹在线更新
+1. 在运行中的 session 上支持受控的第二条 command / trajectory 切换
+2. 让 planner session 和 transition mode 一起定义连续生成语义，而不只是持续 refill
+3. 再提升 waypoint → FloodNet 条件注入质量
+4. 最后再考虑 text-to-waypoint baseline、IPC 和更复杂环境任务
 
-不要跳过离线验证直接接 runtime。否则你会在还没固定 reference 语义时，就开始调在线行为和 tracker，调试成本会非常高。
+不要在 demo 刚闭环时立刻扩成复杂 UI 或多进程系统。当前更值钱的是先把在线切换语义收紧，否则后面所有展示都会建立在不稳定的 session 语义上。
 
-## 17. 与 `motion_tracking` 的 patch 说明
+## 18. 与 `motion_tracking` 的 patch 说明
 
 相关文档在：
 
@@ -923,6 +947,6 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 真正执行时，建议只对 `motion_tracking` 做最小 patch，而不是把它整仓吸收到这里。
 
-## 18. 一句话总结
+## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把最关键的接口、桥接、缓冲和服务骨架定下来了，下一步的主战场是把真实 `motion_tracking` source 接上，而不是继续扩展骨架本身。
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把 fixed demo 主线跑通了，下一步的主战场是在线切换语义，而不是继续补最小接线。 
