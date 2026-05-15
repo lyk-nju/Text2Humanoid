@@ -122,6 +122,10 @@ class FloodNetFileBackend(RuntimeBackend):
             session_dir.mkdir(parents=True, exist_ok=True)
             self._write_chunk_index(session_id)
 
+    STREAM_PHASE_RUNNING = "running"
+    STREAM_PHASE_DONE = "done"
+    STREAM_PHASE_ERROR = "error"
+
     def _write_chunk_index(self, session_id: str) -> None:
         import json
         d = self.output_dir / session_id
@@ -137,6 +141,25 @@ class FloodNetFileBackend(RuntimeBackend):
         with open(d / "chunk_index.json", "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
 
+    def _write_stream_status(self, session_id: str, phase: str | None = None) -> None:
+        import json
+        d = self.output_dir / session_id
+        current_phase = phase or self.STREAM_PHASE_RUNNING
+        status = {
+            "session_id": session_id,
+            "phase": current_phase,
+            "last_chunk_idx": self._chunk_counts.get(session_id, 0) - 1,
+            "chunk_count": self._chunk_counts.get(session_id, 0),
+        }
+        with open(d / "stream_status.json", "w", encoding="utf-8") as f:
+            json.dump(status, f, indent=2)
+
+    def mark_stream_done(self, session_id: str) -> None:
+        self._write_stream_status(session_id, self.STREAM_PHASE_DONE)
+
+    def mark_stream_error(self, session_id: str) -> None:
+        self._write_stream_status(session_id, self.STREAM_PHASE_ERROR)
+
     def push_reference_chunk(self, session_id: str, chunk: G1ReferenceChunk, overlap_frames: int = 4) -> None:
         self.ensure_session(session_id)
         errors = validate_clip_payload(chunk_to_runtime_dict(chunk))
@@ -151,6 +174,7 @@ class FloodNetFileBackend(RuntimeBackend):
 
         self._chunk_counts[session_id] += 1
         self._write_chunk_index(session_id)
+        self._write_stream_status(session_id)
         status = self._statuses[session_id]
         status.buffer_frames += chunk.num_frames
         status.latest_chunk_id = chunk.chunk_id

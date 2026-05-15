@@ -225,3 +225,124 @@ def test_build_components_default_backend_is_shim():
             f"Expected ShimBackend by default, got {type(client.backend)}"
     finally:
         set_root(str(saved))
+
+
+# ---- 008: online refill + stream lifecycle smoke -----------------------------
+
+def test_stream_status_written_on_push():
+    """Each push updates stream_status.json with running phase."""
+    chunk = _make_chunk(5)
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FloodNetFileBackend(output_dir=tmp)
+        backend.push_reference_chunk("s1", chunk)
+        import json
+        status_path = Path(tmp) / "s1" / "stream_status.json"
+        assert status_path.exists()
+        st = json.loads(open(status_path).read())
+        assert st["phase"] == "running"
+        assert st["chunk_count"] == 1
+
+
+def test_stream_lifecycle_done_and_error():
+    """mark_stream_done/error write correct phases."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FloodNetFileBackend(output_dir=tmp)
+        backend.ensure_session("s1")
+        backend.mark_stream_done("s1")
+        import json
+        st = json.loads(open(Path(tmp) / "s1" / "stream_status.json").read())
+        assert st["phase"] == "done"
+
+        backend.mark_stream_error("s1")
+        st = json.loads(open(Path(tmp) / "s1" / "stream_status.json").read())
+        assert st["phase"] == "error"
+
+
+def test_session_refill_cycle_produces_multiple_chunks():
+    """run_refill_cycle produces multiple chunks via mock coordinator."""
+    from text2humanoid.contracts.commands import PromptCommand, TrajectoryCondition, TrajectoryPoint
+    from text2humanoid.orchestrator.session_manager import SessionManager
+    from text2humanoid.orchestrator.pipeline_coordinator import PipelineCoordinator
+    from text2humanoid.runtime.fallback_policy import FallbackPolicy
+
+    backend = ShimBackend(control_hz=50)
+    fallback = FallbackPolicy(low_watermark_frames=5, high_watermark_frames=60)
+
+    chunk_count = [0]
+
+    class _MockPlanner:
+        def warmup(self, text): return None
+        def reset(self): pass
+        def generate_chunk(self, command, start_time):
+            import uuid
+            chunk_count[0] += 1
+            from text2humanoid.contracts.chunks import HumanMotionChunk
+            return HumanMotionChunk(
+                chunk_id=uuid.uuid4().hex, start_time=start_time, fps=20,
+                motion_263=np.zeros((4, 263), dtype=np.float32),
+                text=command.text, metadata={"device": "cpu"},
+            )
+
+    class _MockRetarget:
+        output_fps = 30
+        def retarget_chunk(self, nmr_chunk):
+            return {"dof": np.zeros((6, 29), dtype=np.float32),
+                    "root_trans": np.zeros((6, 3), dtype=np.float32),
+                    "root_rot_quat": np.tile(np.array([[1, 0, 0, 0]], dtype=np.float32), (6, 1))}
+
+    class _MockAdapter:
+        def from_nmr_result(self, chunk_id, start_time, fps, result):
+            return _make_chunk(6)
+
+    coordinator = PipelineCoordinator(
+        planner=_MockPlanner(), retarget=_MockRetarget(),
+        adapter=_MockAdapter(), runtime=MotionTrackingClient(backend=backend),
+        fallback=fallback,
+    )
+    sm = SessionManager(coordinator=coordinator)
+    sid = sm.create_session()
+    cmd = PromptCommand(
+        text="walk",
+        trajectory=TrajectoryCondition(
+            waypoints=[TrajectoryPoint(t=0, x=0, y=0, z=0), TrajectoryPoint(t=2, x=3, y=0, z=4)]
+        ),
+    )
+    # Directly push a chunk into the backend to avoid bridge dependency
+    backend.push_reference_chunk(sid, _make_chunk(6))
+    sm._sessions[sid].timeline.append(cmd)
+    assert backend.get_status(sid).buffer_frames == 6
+
+    # Consume all frames
+    for _ in range(10):
+        backend.consume_step(sid, frames=1)
+    low_status = backend.get_status(sid)
+    assert low_status.buffer_frames == 0, f"buffer should be 0, got {low_status.buffer_frames}"
+
+    # Refill cycle should call planner 3 times (max_chunks=3)
+    from unittest import mock as umock
+    from text2humanoid.contracts.chunks import NMRInputChunk
+
+    def _fake_nmr_input(chunk, tgt_fps=30):
+        return NMRInputChunk(chunk_id=chunk.chunk_id, start_time=chunk.start_time,
+                             fps=tgt_fps, motion_140=np.zeros((6, 140), dtype=np.float32))
+
+    chunk_count[0] = 0
+    # watermark=30 means multiple chunks needed (6+2+2+2... with overlap=4)
+    with umock.patch("text2humanoid.orchestrator.pipeline_coordinator.human_chunk_to_nmr_input", _fake_nmr_input):
+        produced = sm.run_refill_cycle(sid, watermark_frames=30, max_chunks=10)
+    assert produced > 1, f"should produce multiple chunks, got {produced}"
+    assert chunk_count[0] > 1, f"planner should be called multiple times, got {chunk_count[0]}"
+    refilled = backend.get_status(sid)
+    assert refilled.buffer_frames > 0, "buffer should have frames after refill"
+
+
+def test_shim_backend_unaffected_by_stream_lifecycle():
+    """ShimBackend still works as before — no stream_status files."""
+    backend = ShimBackend(control_hz=50)
+    chunk = _make_chunk(6)
+    backend.push_reference_chunk("s1", chunk)
+    assert backend.get_status("s1").buffer_frames == 6
+    backend.consume_step("s1", frames=3)
+    assert backend.get_status("s1").buffer_frames == 3
+    backend.reset_session("s1")
+    assert backend.get_status("s1").buffer_frames == 0

@@ -57,3 +57,28 @@ class SessionManager:
 
     def stop_session(self, session_id: str) -> None:
         self._sessions[session_id].status.phase = SessionPhase.STOPPED.value
+
+    def run_refill_cycle(self, session_id: str, watermark_frames: int = 20, max_chunks: int = 10) -> int:
+        """Produce additional chunks if the runtime buffer is below watermark.
+
+        Reuses the last command from the session timeline as the template for
+        each pipeline run.  Returns the number of chunks produced.
+        """
+        ctx = self._sessions[session_id]
+        if self._coordinator is None:
+            return 0
+        chunks_produced = 0
+        for _ in range(max_chunks):
+            status = self._coordinator.runtime.get_status(session_id)
+            if status.buffer_frames >= watermark_frames:
+                break
+            last_cmd = ctx.timeline.latest_command
+            if last_cmd is None:
+                break
+            ctx.status = self._coordinator.run_once(session_id, last_cmd, start_time=ctx.next_start_time)
+            latest_chunk_end = float(ctx.status.metadata.get("latest_chunk_end_time", ctx.status.sim_time))
+            ctx.next_start_time = max(ctx.next_start_time, latest_chunk_end)
+            chunks_produced += 1
+            if ctx.status.phase in (SessionPhase.ERROR.value, SessionPhase.STOPPED.value):
+                break
+        return chunks_produced
