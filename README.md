@@ -796,7 +796,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `109 passed`
+- `114 passed`
 
 ## 14. 依赖与安装
 
@@ -927,7 +927,7 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 17. 下一步建议
 
-当前里程碑：最小受控在线 command transition 已闭环。运行中的 session 已能接受第二条 command，并保持 planner-native refill 连续性。
+当前里程碑：最小受控在线 command transition 已闭环。运行中的 session 已能接受第二条 command，并保持 planner-native refill 连续性。更完整的多次 command / trajectory 序列语义仍在收紧中。
 
 下一步推荐顺序：
 
