@@ -160,3 +160,68 @@ def test_validate_frame_payload_wrong_joints():
     payload = {"root_pos": np.zeros(3), "root_quat": np.zeros(4), "dof_pos": np.zeros(10)}
     errors = validate_frame_payload(payload, expected_joints=29)
     assert len(errors) > 0
+
+
+# ---- 006: config_loader backend selection -----------------------------------
+
+def test_build_components_with_floodnet_file_backend():
+    """Verify runtime.backend='floodnet_file' creates FloodNetFileBackend."""
+    import tempfile
+    from text2humanoid.infra.paths import get_root, set_root
+    from text2humanoid.infra.config_loader import build_components
+
+    saved = get_root()
+    real_root = get_root()
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = {
+            "root_path": str(real_root),
+            "artifacts_root": tmp,
+            "host": "127.0.0.1",
+            "port": 9999,
+            "planner": {
+                "config_path": "FloodNet/configs/ldf_generate.yaml",
+            },
+            "retarget": {
+                "apply_filter": False,
+            },
+            "runtime": {
+                "backend": "floodnet_file",
+                "floodnet_output_dir": tmp + "/floodnet_clips",
+                "control_hz": 50,
+            },
+        }
+        try:
+            session_manager, artifact_store = build_components(cfg)
+            coordinator = session_manager._coordinator
+            client = coordinator.runtime
+            assert isinstance(client.backend, FloodNetFileBackend), \
+                f"Expected FloodNetFileBackend, got {type(client.backend)}"
+            assert client.backend.output_dir == Path(tmp + "/floodnet_clips")
+        finally:
+            set_root(str(saved))
+
+
+def test_build_components_default_backend_is_shim():
+    """Verify default runtime.backend is ShimBackend."""
+    from text2humanoid.infra.paths import get_root, set_root
+    from text2humanoid.infra.config_loader import build_components
+
+    saved = get_root()
+    real_root = get_root()
+    try:
+        cfg = {
+            "root_path": str(real_root),
+            "artifacts_root": "./artifacts/test_default",
+            "host": "127.0.0.1",
+            "port": 9999,
+            "planner": {"config_path": "FloodNet/configs/ldf_generate.yaml"},
+            "retarget": {"apply_filter": False},
+            "runtime": {"control_hz": 50},
+        }
+        session_manager, _ = build_components(cfg)
+        client = session_manager._coordinator.runtime
+        from text2humanoid.runtime.motion_tracking_client import ShimBackend
+        assert isinstance(client.backend, ShimBackend), \
+            f"Expected ShimBackend by default, got {type(client.backend)}"
+    finally:
+        set_root(str(saved))

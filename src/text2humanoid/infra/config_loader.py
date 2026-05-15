@@ -13,7 +13,10 @@ from text2humanoid.planner.floodnet_service import FloodNetPlannerService
 from text2humanoid.retarget.g1_reference_adapter import G1ReferenceAdapter
 from text2humanoid.retarget.nmr_service import NMRRetargetService
 from text2humanoid.runtime.fallback_policy import FallbackPolicy
-from text2humanoid.runtime.motion_tracking_client import MotionTrackingClient
+from text2humanoid.runtime.motion_tracking_client import (
+    FloodNetFileBackend,
+    MotionTrackingClient,
+)
 
 _PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -76,11 +79,22 @@ def build_components(cfg: dict):
         tracking_config_path=adapter_tracking_config,
     )
 
-    runtime = MotionTrackingClient(
-        control_hz=int(runtime_cfg.get("control_hz", 50)),
-        future_horizon_frames=int(runtime_cfg.get("future_horizon_frames", 16)),
-        xml_path=adapter_xml_path,
-    )
+    backend_name = str(runtime_cfg.get("backend", "shim")).strip().lower()
+    if backend_name == "floodnet_file":
+        floodnet_output_dir = str(
+            resolve_path(root, runtime_cfg.get("floodnet_output_dir", cfg.get("artifacts_root", "./artifacts/floodnet")))
+        )
+        backend = FloodNetFileBackend(
+            output_dir=floodnet_output_dir,
+            control_hz=int(runtime_cfg.get("control_hz", 50)),
+        )
+        runtime = MotionTrackingClient(backend=backend)
+    else:
+        runtime = MotionTrackingClient(
+            control_hz=int(runtime_cfg.get("control_hz", 50)),
+            future_horizon_frames=int(runtime_cfg.get("future_horizon_frames", 16)),
+            xml_path=adapter_xml_path,
+        )
     fallback = FallbackPolicy(
         low_watermark_frames=int(runtime_cfg.get("low_watermark_frames", 20)),
         high_watermark_frames=int(runtime_cfg.get("high_watermark_frames", 60)),

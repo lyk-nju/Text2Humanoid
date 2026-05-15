@@ -12,6 +12,8 @@ retarget:
   xml_path: "MakeTrackingEasy/assets/g1_mocap_29dof.xml"
 runtime:
   tracking_config: "motion_tracking/sim2real/config/tracking.yaml"
+  backend: "shim"                     # "shim" (default) or "floodnet_file"
+  # floodnet_output_dir: "./artifacts/floodnet"  # used when backend="floodnet_file"
   control_hz: 50
   low_watermark_frames: 20
   high_watermark_frames: 60
