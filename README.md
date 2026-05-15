@@ -803,7 +803,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `128 passed`
+- `136 passed`
 
 ## 14. 依赖与安装
 
@@ -994,7 +994,7 @@ uv run src/deploy.py --sim2sim \
 - file-based 路径（`demo_fixed.yaml` + `tracking_floodnet.yaml`）继续保留为 fallback / debug
 - 两条路径在配置、文档和 smoke 层面已对齐
 
-当前剩余风险不再是”哪条路径是主线”，而是：
+当前剩余风险不再是“哪条路径是主线”，而是：
 
 - TCP socket 桥接在极端网络条件下尚未压测
 - 在线 bridge 的长稳运行尚未经过长时间考验
@@ -1005,9 +1005,10 @@ uv run src/deploy.py --sim2sim \
 
 下一步推荐顺序：
 
-1. 为 socket 主线和 file-based fallback 都补最小回归保护（已完成）
+1. 收紧 socket 主线的 stop / timeout / error / disconnect 语义
 2. 保持现有 source contract 和两条路径稳定
-3. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
+3. 为长稳运行和异常边界补最小回归保护
+4. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
 
 不要在刚完成 socket 主线提升后立刻跳进”大而全”的真实仿真测试。
 
@@ -1027,4 +1028,4 @@ uv run src/deploy.py --sim2sim \
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade 以及 socket bridge 默认 demo 主线跑通了，file-based fallback 路径继续可用。下一步的主战场是保持两条路径稳定，逐步推进系统级 pipeline testing。
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade、最小在线 runtime bridge，以及 socket 默认 demo 主线跑通了，file-based fallback 路径继续可用。下一步的主战场是收紧 socket 主线的运行期语义，而不是过早切到系统级 pipeline testing。
