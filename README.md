@@ -796,7 +796,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `116 passed`
+- `120 passed`
 
 ## 14. 依赖与安装
 
@@ -927,13 +927,13 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 17. 下一步建议
 
-当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环。运行中的 session 已能连续接受三条及以上 command，并区分 `APPEND` / `REPLACE` 的最小行为。
+当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环。运行中的 session 已能连续接受三条及以上 command，并区分 `APPEND` / `REPLACE` 的最小行为。平滑 `CROSSFADE` 路径已经开始接入，但切换窗口的观测与导出还没有完全收口。
 
 下一步推荐顺序：
 
-1. 把在线切换从“最小语义正确”推进到“真实平滑 transition 质量”
-2. 让 `CROSSFADE` 不再只是 `APPEND` 的别名
-3. 补最小切换窗口观测
+1. 继续把在线切换从“最小语义正确”推进到“真实平滑 transition 质量”
+2. 让 `CROSSFADE` 的 overlap / blend 窗口进入 status / artifact 观测
+3. 收紧切换质量 smoke，而不只验证内部 metadata
 4. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
 
 不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把核心系统主线继续搭完，再按 `Stage A -> Stage B -> Stage C` 做系统级验证。
