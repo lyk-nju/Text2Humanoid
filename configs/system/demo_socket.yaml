@@ -1,0 +1,44 @@
+# Default demo mainline: socket bridge (online runtime).
+#
+# This is the RECOMMENDED demo configuration. It uses the online socket
+# bridge so that motion_tracking can consume reference chunks in real time
+# without polling the filesystem.
+#
+# Two-terminal startup:
+#
+#   Terminal 1 (Text2Humanoid API server):
+#     PYTHONPATH=src python apps/api_server.py --config configs/system/demo_socket.yaml
+#
+#   Terminal 2 (motion_tracking runtime):
+#     cd <motion_tracking>
+#     PYTHONPATH=sim2real/src python sim2real/src/deploy.py --sim2sim \
+#       --tracking-config config/tracking_socket_floodnet.yaml
+#
+# Then create session and push commands via HTTP:
+#
+#   curl -X POST http://127.0.0.1:8080/sessions
+#   curl -X POST http://127.0.0.1:8080/sessions/<sid>/commands \
+#     -H "Content-Type: application/json" \
+#     -d '{"text":"walk forward slowly","trajectory":{"waypoints":[{"t":0,"x":0,"y":0,"z":0},{"t":5,"x":5,"y":0,"z":0}]}}'
+
+root_path: auto
+artifacts_root: "./artifacts/demo"
+host: "127.0.0.1"
+port: 8080
+
+planner:
+  config_path: "FloodNet/configs/ldf_generate.yaml"
+  chunk_frames: 60
+
+retarget:
+  apply_filter: true
+  tgt_fps: 30
+
+runtime:
+  backend: "socket"
+  socket_host: "127.0.0.1"
+  socket_port: 15555
+  control_hz: 50
+  low_watermark_frames: 20
+  high_watermark_frames: 80
+  future_horizon_frames: 20

@@ -40,7 +40,7 @@
 - 服务形态：`长驻 HTTP + WebSocket`
 - 目标场景：`sim2sim`
 
-也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；同时在线 runtime bridge 也已经最小闭环：主服务配置入口已能选择 `socket` backend，producer-side TCP smoke、consumer-side 协议模拟、`motion_tracking` 侧在线 consumer，以及真实 runtime-consumer smoke 都已经存在并能在当前标准验证环境里直接跑通。当前剩下的工程问题不再是“桥有没有接通”，而是“如何把 socket bridge 提升成默认 demo 主线，同时保留 file-based fallback”。
+也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；同时在线 runtime bridge 也已经最小闭环：主服务配置入口已能选择 `socket` backend，producer-side TCP smoke、consumer-side 协议模拟、`motion_tracking` 侧在线 consumer，以及真实 runtime-consumer smoke 都已经存在并能在当前标准验证环境里直接跑通。当前 socket bridge 已经提升为默认 demo 主线（`demo_socket.yaml`），`demo_fixed.yaml` 保留为 file-based fallback / debug 路径。
 
 ## 3. 与三个外部仓库的关系
 
@@ -540,6 +540,12 @@ HTTP PromptCommand
 
 系统级配置（这是唯一运行时真正加载的配置入口）：
 
+- [demo_socket.yaml](./configs/system/demo_socket.yaml)
+  - **默认推荐主线** — socket bridge 在线 runtime
+  - `runtime.backend: socket`，与 `motion_tracking` 侧 `socket_floodnet` 配套
+- [demo_fixed.yaml](./configs/system/demo_fixed.yaml)
+  - **fallback / debug 路径** — file-based (`floodnet_file` backend)
+  - 适合离线调试和文件系统消费
 - [local_dev.yaml](./configs/system/local_dev.yaml)
   - 本机开发用
   - `127.0.0.1:8080`
@@ -821,17 +827,57 @@ PYTHONPATH=src python -m pytest tests/ -q
 - 先在你现有的工作环境中运行
 - 等真实 `motion_tracking` source plugin 接上后，再决定最终环境管理策略
 
-## 15. Demo Runbook — Fixed Text + Fixed Trajectory
+## 15. Demo Runbook
 
-### 15.1 Demo 范围
+### 15.1 默认主线：Socket Bridge（推荐）
 
-- 固定文本（"walk forward slowly"）
-- 固定手工轨迹（直线 waypoints）
+- 在线 TCP bridge，Text2Humanoid `SocketBackend` → motion_tracking `SocketFloodNetSource`
+- 不需要文件系统中转
 - 单机单 GPU
-- session-scoped refill（后台自动补 chunk）
-- floodnet_file backend 写 NPZ → motion_tracking 消费
 
-### 15.2 最小启动顺序
+**配对配置：**
+- Text2Humanoid 侧：[demo_socket.yaml](./configs/system/demo_socket.yaml) — `runtime.backend: socket`
+- motion_tracking 侧：[tracking_socket_floodnet.yaml](../motion_tracking/sim2real/config/tracking_socket_floodnet.yaml) — `motion_source: socket_floodnet`
+
+**最小启动顺序：**
+
+```bash
+# Terminal 1: 启动 Text2Humanoid API server
+cd /path/to/Text2Humanoid
+PYTHONPATH=src python apps/api_server.py --config configs/system/demo_socket.yaml
+
+# Terminal 2: 创建 session 并推送命令
+curl -X POST http://127.0.0.1:8080/sessions
+# → {"session_id": "abc123..."}
+
+curl -X POST http://127.0.0.1:8080/sessions/abc123/commands \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "walk forward slowly",
+    "trajectory": {
+      "waypoints": [
+        {"t": 0.0, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"t": 5.0, "x": 5.0, "y": 0.0, "z": 0.0}
+      ]
+    }
+  }'
+
+# Terminal 3: 启动 motion_tracking runtime（socket consumer）
+cd /path/to/motion_tracking
+PYTHONPATH=sim2real/src python sim2real/src/deploy.py --sim2sim \
+  --tracking-config config/tracking_socket_floodnet.yaml
+```
+
+### 15.2 Fallback / Debug 路径：File-based
+
+- 写 NPZ 到文件系统 → motion_tracking `FloodNetMotionSource` 轮询消费
+- 适合离线调试、单步验证、不需要在线 bridge 的场景
+
+**配对配置：**
+- Text2Humanoid 侧：[demo_fixed.yaml](./configs/system/demo_fixed.yaml) — `runtime.backend: floodnet_file`
+- motion_tracking 侧：[tracking_floodnet.yaml](../motion_tracking/sim2real/config/tracking_floodnet.yaml) — `motion_source: floodnet`
+
+**最小启动顺序：**
 
 ```bash
 # Terminal 1: 启动 Text2Humanoid API server
@@ -857,7 +903,7 @@ curl -X POST http://127.0.0.1:8080/sessions/abc123/commands \
 # 启动后台 refill（自动持续补 chunk）
 curl -X POST http://127.0.0.1:8080/sessions/abc123/refill/start
 
-# Terminal 3: 启动 motion_tracking runtime
+# Terminal 3: 启动 motion_tracking runtime（file consumer）
 cd /path/to/motion_tracking
 uv run src/deploy.py --sim2sim \
   --tracking-config config/tracking_floodnet.yaml
@@ -865,23 +911,34 @@ uv run src/deploy.py --sim2sim \
 
 ### 15.3 最小验证步骤
 
+**Socket 主线验证：**
+
+1. 确认 `motion_tracking` 终端日志中出现 `[SocketFloodNetSource] Connected`。
+2. 检查 session 状态：
+   ```bash
+   curl http://127.0.0.1:8080/sessions/abc123/status
+   # → phase: running, buffer_frames > 0
+   ```
+3. 停止 session 后验证状态：
+   ```bash
+   curl -X POST http://127.0.0.1:8080/sessions/abc123/stop
+   ```
+
+**File fallback 验证：**
+
 1. 检查 session 输出目录是否有多个 chunk：
    ```bash
    ls artifacts/demo/floodnet_clips/abc123/chunk_*.npz
    ```
-
 2. 检查 chunk_index.json：
    ```bash
    cat artifacts/demo/floodnet_clips/abc123/chunk_index.json
-   # → {"chunk_count": N, "chunks": [...]}
    ```
-
 3. 检查 stream 生命周期：
    ```bash
    cat artifacts/demo/floodnet_clips/abc123/stream_status.json
    # → {"phase": "running"}
    ```
-
 4. 停止 session 后验证 `done`：
    ```bash
    curl -X POST http://127.0.0.1:8080/sessions/abc123/stop
@@ -891,7 +948,16 @@ uv run src/deploy.py --sim2sim \
 
 ### 15.4 配置说明
 
-Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.yaml)，关键参数：
+**Socket 主线** [demo_socket.yaml](./configs/system/demo_socket.yaml)：
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `planner.chunk_frames` | 60 | 每次生成 ~3s 动作 |
+| `runtime.backend` | `socket` | TCP 在线发送 |
+| `runtime.socket_port` | 15555 | TCP 监听端口 |
+| `runtime.high_watermark_frames` | 80 | buffer 高水位 |
+
+**File fallback** [demo_fixed.yaml](./configs/system/demo_fixed.yaml)：
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
@@ -922,35 +988,28 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 后续一旦接真 runtime，上游 planner 和下游仿真/推理竞争资源会成为时延尖峰来源。
 
-### 16.5 在线 runtime bridge 已接通，但默认 demo 主线仍未切到 socket
+### 16.5 在线 runtime bridge 已接通，socket 已是默认 demo 主线
 
-当前 fixed demo 仍然默认通过 `floodnet_file` backend 接到 `motion_tracking`，这条路径继续适合作为 fallback / debug 使用。
+- 默认 demo 已切换到 socket bridge 主线（`demo_socket.yaml` + `tracking_socket_floodnet.yaml`）
+- file-based 路径（`demo_fixed.yaml` + `tracking_floodnet.yaml`）继续保留为 fallback / debug
+- 两条路径在配置、文档和 smoke 层面已对齐
 
-同时，最小在线 bridge 主线已经完成闭环：
+当前剩余风险不再是”哪条路径是主线”，而是：
 
-- [socket_backend.py](./src/text2humanoid/runtime/socket_backend.py)
-- `motion_tracking` 侧的 `SocketFloodNetSource`
-- producer-side TCP smoke
-- consumer-side 协议模拟
-- 真实 runtime-consumer smoke
-
-也就是说，当前风险不再是“在线 source 还没接通”，而是：
-
-- 默认 demo / runbook 还没有切到 socket 主线
-- file-based 与 socket 两条路径的主次关系还没有在文档和配置层完全收紧
+- TCP socket 桥接在极端网络条件下尚未压测
+- 在线 bridge 的长稳运行尚未经过长时间考验
 
 ## 17. 下一步建议
 
-当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。runtime 主线方面，最小在线 bridge 也已经闭环：`socket` backend、`SocketFloodNetSource`、producer-side TCP smoke、consumer-side 协议模拟以及真实 runtime-consumer smoke 都已经跑通。下一步的重点不再是“桥能不能工作”，而是“把 socket bridge 提升成默认 demo 主线，同时保留 file-based fallback”。
+当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。runtime 主线方面，socket bridge 已提升为默认 demo 主线：`demo_socket.yaml` + `tracking_socket_floodnet.yaml`，同时 `demo_fixed.yaml` + `tracking_floodnet.yaml` 保留为 file-based fallback。
 
 下一步推荐顺序：
 
-1. 把 socket bridge 提升成默认 demo 主线
-2. 保持现有 source contract 和 `floodnet_file` fallback 路径稳定
-3. 为 socket 主线和 file-based fallback 都补最小回归保护
-4. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
+1. 为 socket 主线和 file-based fallback 都补最小回归保护（已完成）
+2. 保持现有 source contract 和两条路径稳定
+3. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
 
-不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把核心系统主线继续搭完，再按 `Stage A -> Stage B -> Stage C` 做系统级验证。
+不要在刚完成 socket 主线提升后立刻跳进”大而全”的真实仿真测试。
 
 ## 18. 与 `motion_tracking` 的 patch 说明
 
@@ -968,4 +1027,4 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade 以及最小在线 runtime bridge 主线跑通了，下一步的主战场是把 socket bridge 提升成默认 demo 主线，而不是过早切到系统级 pipeline testing。
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade 以及 socket bridge 默认 demo 主线跑通了，file-based fallback 路径继续可用。下一步的主战场是保持两条路径稳定，逐步推进系统级 pipeline testing。

@@ -1,7 +1,7 @@
-# Demo configuration: fixed text + fixed hand-authored trajectory.
+# Fallback / debug configuration: file-based (floodnet_file backend).
 #
-# This config is designed for a stable, repeatable end-to-end demo
-# where the entire pipeline runs from a single command push:
+# This is the FALLBACK demo path. The RECOMMENDED mainline is demo_socket.yaml.
+# Use this config when you need offline / filesystem-based debugging.
 #
 #   Text2Humanoid (floodnet_file backend)
 #     → writes chunk_*.npz to floodnet_output_dir
