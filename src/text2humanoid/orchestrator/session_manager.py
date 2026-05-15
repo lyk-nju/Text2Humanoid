@@ -71,13 +71,19 @@ class SessionManager:
                 if driver.session is None:
                     driver.start_session(command)
                 elif trans_rec is not None:
-                    from text2humanoid.planner.prompt_transition import should_replace_immediately
+                    from text2humanoid.planner.prompt_transition import (
+                        should_replace_immediately,
+                        should_crossfade,
+                        crossfade_overlap_frames,
+                    )
                     if should_replace_immediately(command.transition_mode):
                         driver.transition(command)
                         is_replace = True
                     else:
                         # APPEND / CROSSFADE: queue as pending, refill handles it
                         driver.session.pending_command = command
+                        if should_crossfade(command.transition_mode):
+                            driver.session.metadata["crossfade_overlap"] = crossfade_overlap_frames(command.transition_mode)
                     trans_rec.boundary_chunk_index = driver.session.chunk_index
                     import time as _time
                     trans_rec.transition_time = _time.time()
@@ -133,7 +139,9 @@ class SessionManager:
         driver_session = driver.session if driver is not None else None
 
         # Promote pending command if APPEND/CROSSFADE transition is waiting
+        pending_crossfade_overlap = 0
         if driver_session is not None and driver_session.has_pending:
+            pending_crossfade_overlap = driver_session.metadata.pop("crossfade_overlap", 0)
             driver_session.promote_pending()
 
         chunks_produced = 0
@@ -155,7 +163,11 @@ class SessionManager:
                     fps=self._coordinator.retarget.output_fps,
                     result=result,
                 )
-                self._coordinator.runtime.push_reference_chunk(session_id, ref_chunk)
+                overlap = 4
+                if pending_crossfade_overlap > 0:
+                    overlap = pending_crossfade_overlap
+                    pending_crossfade_overlap = 0  # only apply to first chunk after transition
+                self._coordinator.runtime.push_reference_chunk(session_id, ref_chunk, overlap_frames=overlap)
                 ctx.status = self._coordinator.runtime.get_status(session_id)
                 ctx.next_start_time = driver_session.next_start_time
             else:

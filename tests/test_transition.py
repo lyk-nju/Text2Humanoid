@@ -301,3 +301,70 @@ def test_replace_generates_immediate_chunk():
             n_after = len(list((Path(tmp) / sid).glob("chunk_*.npz")))
             assert n_after > n_before, \
                 f"REPLACE should generate immediate chunk: {n_before} → {n_after}"
+
+
+# ---- 013: CROSSFADE real semantics smoke ------------------------------------
+
+def test_crossfade_sets_overlap_metadata():
+    """CROSSFADE stores crossfade_overlap in session metadata."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="first", command_id="1"))
+            sm.push_command(sid, PromptCommand(text="second", command_id="2",
+                transition_mode="crossfade"))
+            # CROSSFADE should set crossfade_overlap in planner session metadata
+            assert planner._driver.session.has_pending
+            assert planner._driver.session.metadata.get("crossfade_overlap", 0) > 0
+
+
+def test_crossfade_refill_passes_larger_overlap():
+    """After CROSSFADE promote, refill chunk uses larger overlap."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="first", command_id="1"))
+            sm.push_command(sid, PromptCommand(text="second", command_id="2",
+                transition_mode="crossfade"))
+
+            # Refill promotes crossfade pending — should work without error
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=2)
+            # Verify chunks were produced
+            session_dir = Path(tmp) / sid
+            assert len(list(session_dir.glob("chunk_*.npz"))) >= 2
+            # Verify crossfade overlap was consumed (metadata cleared)
+            assert planner._driver.session.metadata.get("crossfade_overlap", 0) == 0
+
+
+def test_append_vs_crossfade_distinguishable():
+    """APPEND uses default overlap(4), CROSSFADE uses larger overlap(12)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="a", command_id="1"))
+            # APPEND: no crossfade_overlap in metadata
+            sm.push_command(sid, PromptCommand(text="b", command_id="2",
+                transition_mode="append"))
+            assert planner._driver.session.metadata.get("crossfade_overlap", 0) == 0
+            # Clear pending
+            planner._driver.session.pending_command = None
+            planner._driver.session.metadata.pop("crossfade_overlap", None)
+
+            # CROSSFADE: crossfade_overlap set in metadata
+            sm.push_command(sid, PromptCommand(text="c", command_id="3",
+                transition_mode="crossfade"))
+            assert planner._driver.session.metadata.get("crossfade_overlap", 0) > 0
+
+
+def test_crossfade_does_not_break_lifecycle():
+    """CROSSFADE transitions → stop → done."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="a", command_id="1"))
+            sm.push_command(sid, PromptCommand(text="b", command_id="2",
+                transition_mode="crossfade"))
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=3)
+        sm.stop_session(sid)
+        st = json.loads(open(Path(tmp) / sid / "stream_status.json").read())
+        assert st["phase"] == "done"

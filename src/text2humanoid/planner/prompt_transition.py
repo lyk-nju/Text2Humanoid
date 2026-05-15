@@ -15,9 +15,20 @@ def resolve_chunk_frames(command: PromptCommand, default_chunk_frames: int) -> i
     return max(4, int(requested))
 
 
+DEFAULT_CROSSFADE_OVERLAP = 12  # frames of overlap blend for CROSSFADE transitions
+
+
 def should_replace_immediately(mode: str) -> bool:
     return mode == TransitionMode.REPLACE.value
 
 
 def should_append_after_current(mode: str) -> bool:
-    return mode in (TransitionMode.APPEND.value, TransitionMode.CROSSFADE.value)
+    return mode == TransitionMode.APPEND.value
+
+
+def should_crossfade(mode: str) -> bool:
+    return mode == TransitionMode.CROSSFADE.value
+
+
+def crossfade_overlap_frames(mode: str) -> int:
+    return DEFAULT_CROSSFADE_OVERLAP if should_crossfade(mode) else 0
