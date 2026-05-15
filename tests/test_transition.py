@@ -149,11 +149,12 @@ def test_refill_uses_new_command_after_transition():
         with p:
             sm.push_command(sid, PromptCommand(text="walk", command_id="1"))
             sm.push_command(sid, PromptCommand(text="run fast", command_id="2"))
-            sm.run_refill_cycle(sid, watermark_frames=100, max_chunks=1)
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=2)
             assert planner._driver.session.command.text == "run fast"
 
             session_dir = Path(tmp) / sid
-            assert len(list(session_dir.glob("chunk_*.npz"))) >= 3
+            # 1st cmd chunk + refill chunks (APPEND doesn't generate immediate chunk)
+            assert len(list(session_dir.glob("chunk_*.npz"))) >= 2
 
 
 def test_transition_does_not_break_stream_lifecycle():
@@ -190,10 +191,10 @@ def test_three_commands_replay_append():
             assert ctx.timeline.active_command_id == "3"
 
             # REFILL: APPEND mode → pending promoted on refill, then new command used
-            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=3)
-            # After refill at least 3 chunks from 3 commands should exist
+            sm.run_refill_cycle(sid, watermark_frames=400, max_chunks=5)
+            # APPEND only queues pending; first cmd + refills produce chunks
             session_dir = Path(tmp) / sid
-            assert len(list(session_dir.glob("chunk_*.npz"))) >= 3
+            assert len(list(session_dir.glob("chunk_*.npz"))) >= 2
 
 
 def test_replace_mode_switches_immediately():
@@ -259,3 +260,44 @@ def test_lifecycle_preserved_after_three_commands():
         sm.stop_session(sid)
         st = json.loads(open(Path(tmp) / sid / "stream_status.json").read())
         assert st["phase"] == "done"
+
+
+def test_append_does_not_generate_immediate_chunk():
+    """APPEND mode: new command doesn't generate a chunk immediately."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="first", command_id="1"))
+            n_before = len(list((Path(tmp) / sid).glob("chunk_*.npz")))
+
+            # APPEND: should NOT call run_once, so no new chunk
+            sm.push_command(sid, PromptCommand(text="second", command_id="2",
+                transition_mode="append"))
+            n_after_append = len(list((Path(tmp) / sid).glob("chunk_*.npz")))
+            assert n_after_append == n_before, \
+                f"APPEND should not generate immediate chunk: {n_before} → {n_after_append}"
+
+            # Pending should be set
+            assert planner._driver.session.has_pending
+            assert planner._driver.session.pending_command.text == "second"
+
+            # Refill promotes pending and generates
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=1)
+            n_after_refill = len(list((Path(tmp) / sid).glob("chunk_*.npz")))
+            assert n_after_refill > n_before, "refill should generate new chunk after APPEND"
+
+
+def test_replace_generates_immediate_chunk():
+    """REPLACE mode: new command generates a chunk immediately."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="old", command_id="1"))
+            n_before = len(list((Path(tmp) / sid).glob("chunk_*.npz")))
+
+            # REPLACE: calls run_once immediately → new chunk
+            sm.push_command(sid, PromptCommand(text="new", command_id="2",
+                transition_mode="replace"))
+            n_after = len(list((Path(tmp) / sid).glob("chunk_*.npz")))
+            assert n_after > n_before, \
+                f"REPLACE should generate immediate chunk: {n_before} → {n_after}"

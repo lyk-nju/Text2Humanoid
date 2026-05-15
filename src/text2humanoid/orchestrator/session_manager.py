@@ -64,6 +64,7 @@ class SessionManager:
             ctx.status = self._coordinator.warmup(session_id, command.text)
 
         # Planner session: first command starts, subsequent commands transition
+        is_replace = False
         if self._coordinator.planner is not None:
             driver = getattr(self._coordinator.planner, "_driver", None)
             if driver is not None:
@@ -73,25 +74,33 @@ class SessionManager:
                     from text2humanoid.planner.prompt_transition import should_replace_immediately
                     if should_replace_immediately(command.transition_mode):
                         driver.transition(command)
+                        is_replace = True
                     else:
-                        # APPEND / CROSSFADE: set as pending, switch after current
+                        # APPEND / CROSSFADE: queue as pending, refill handles it
                         driver.session.pending_command = command
                     trans_rec.boundary_chunk_index = driver.session.chunk_index
                     import time as _time
                     trans_rec.transition_time = _time.time()
 
-        ctx.status = self._coordinator.run_once(session_id, command, start_time=ctx.next_start_time)
-        latest_chunk_end = float(ctx.status.metadata.get("latest_chunk_end_time", ctx.status.sim_time))
-        ctx.next_start_time = max(ctx.next_start_time, latest_chunk_end)
+        # REPLACE: run once immediately with new command.
+        # APPEND/CROSSFADE/first command: run once to keep chunk flowing.
+        if is_replace or is_first or trans_rec is None:
+            ctx.status = self._coordinator.run_once(session_id, command, start_time=ctx.next_start_time)
+            latest_chunk_end = float(ctx.status.metadata.get("latest_chunk_end_time", ctx.status.sim_time))
+            ctx.next_start_time = max(ctx.next_start_time, latest_chunk_end)
 
-        # Push transition info to status
+        # Push transition + pending info to status
+        ctx.status.metadata["active_command_id"] = ctx.timeline.active_command_id
+        ctx.status.metadata["transition_mode"] = command.transition_mode
+        ctx.status.metadata["transition_count"] = len(ctx.timeline.transitions)
+        if driver is not None and driver.session is not None:
+            ctx.status.metadata["pending_command_id"] = driver.session.pending_command.command_id if driver.session.has_pending else ""
         if trans_rec is not None:
             ctx.status.metadata["transition"] = {
                 "previous_command_id": trans_rec.previous_command_id,
                 "new_command_id": trans_rec.new_command_id,
                 "boundary_chunk_index": trans_rec.boundary_chunk_index,
             }
-        ctx.status.metadata["active_command_id"] = ctx.timeline.active_command_id
 
     def reset_session(self, session_id: str) -> None:
         ctx = self._sessions[session_id]
