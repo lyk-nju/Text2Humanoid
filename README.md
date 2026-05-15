@@ -64,7 +64,7 @@
 
 ## 4. 当前实现状态
 
-当前仓库已经不是空骨架，而是一个可编译、可测试、可启动，并且能跑 fixed text + fixed trajectory demo 的系统壳。
+当前仓库已经不是空骨架，而是一个可编译、可测试、可启动，并且能跑 fixed text + fixed trajectory demo、支持多次在线 command 序列最小语义的系统壳。
 
 已经实现的部分：
 
@@ -796,7 +796,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `114 passed`
+- `116 passed`
 
 ## 14. 依赖与安装
 
@@ -927,13 +927,13 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 17. 下一步建议
 
-当前里程碑：最小受控在线 command transition 已闭环。运行中的 session 已能接受第二条 command，并保持 planner-native refill 连续性。更完整的多次 command / trajectory 序列语义仍在收紧中。
+当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环。运行中的 session 已能连续接受三条及以上 command，并区分 `APPEND` / `REPLACE` 的最小行为。
 
 下一步推荐顺序：
 
-1. 继续把在线切换从“最小闭环”推进到“稳定的多次 command / trajectory 序列”
-2. 明确 `APPEND / REPLACE / CROSSFADE` 的最小一致语义
-3. 再把 planner session 的长序列行为收紧
+1. 把在线切换从“最小语义正确”推进到“真实平滑 transition 质量”
+2. 让 `CROSSFADE` 不再只是 `APPEND` 的别名
+3. 补最小切换窗口观测
 4. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
 
 不要在刚完成最小在线切换后立刻跳进“大而全”的真实仿真测试。更合理的顺序是先把核心系统主线继续搭完，再按 `Stage A -> Stage B -> Stage C` 做系统级验证。
@@ -954,4 +954,4 @@ Demo 配置位于 [configs/system/demo_fixed.yaml](./configs/system/demo_fixed.y
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把最小在线切换主线跑通了，下一步的主战场是继续把在线序列语义搭完整，而不是过早切到系统级 pipeline testing。 
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换的最小主线跑通了，下一步的主战场是把切换质量做平滑，而不是过早切到系统级 pipeline testing。 
