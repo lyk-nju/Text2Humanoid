@@ -70,7 +70,12 @@ class SessionManager:
                 if driver.session is None:
                     driver.start_session(command)
                 elif trans_rec is not None:
-                    driver.transition(command)
+                    from text2humanoid.planner.prompt_transition import should_replace_immediately
+                    if should_replace_immediately(command.transition_mode):
+                        driver.transition(command)
+                    else:
+                        # APPEND / CROSSFADE: set as pending, switch after current
+                        driver.session.pending_command = command
                     trans_rec.boundary_chunk_index = driver.session.chunk_index
                     import time as _time
                     trans_rec.transition_time = _time.time()
@@ -117,6 +122,10 @@ class SessionManager:
         # Prefer planner-native session streaming
         driver = getattr(self._coordinator.planner, "_driver", None)
         driver_session = driver.session if driver is not None else None
+
+        # Promote pending command if APPEND/CROSSFADE transition is waiting
+        if driver_session is not None and driver_session.has_pending:
+            driver_session.promote_pending()
 
         chunks_produced = 0
         for _ in range(max_chunks):

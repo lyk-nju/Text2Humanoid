@@ -19,6 +19,7 @@ class PlannerSession:
     """
 
     command: PromptCommand
+    pending_command: PromptCommand | None = None
     chunk_index: int = 0
     next_start_time: float = 0.0
     metadata: dict = field(default_factory=dict)
@@ -26,6 +27,22 @@ class PlannerSession:
     def advance(self, chunk_end_time: float) -> None:
         self.chunk_index += 1
         self.next_start_time = max(self.next_start_time, chunk_end_time)
+
+    @property
+    def active_command_id(self) -> str:
+        return self.command.command_id if self.command else ""
+
+    @property
+    def has_pending(self) -> bool:
+        return self.pending_command is not None
+
+    def promote_pending(self) -> bool:
+        """Promote pending to active. Returns True if promoted."""
+        if self.pending_command is not None:
+            self.command = self.pending_command
+            self.pending_command = None
+            return True
+        return False
 
 
 class StreamPlannerDriver:

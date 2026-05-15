@@ -122,12 +122,13 @@ def test_running_session_accepts_second_command():
             before = planner._driver.session.chunk_index
 
             c2 = PromptCommand(text="run", command_id="cmd2",
+                               transition_mode="replace",
                                trajectory=TrajectoryCondition(
                                    waypoints=[TrajectoryPoint(t=0, x=0, y=0, z=0),
                                               TrajectoryPoint(t=5, x=10, y=0, z=0)]))
             sm.push_command(sid, c2)
 
-            # Planner session now has new command
+            # REPLACE mode: planner session immediately has new command
             assert planner._driver.session.command is c2
             assert planner._driver.session.chunk_index >= before
 
@@ -162,6 +163,99 @@ def test_transition_does_not_break_stream_lifecycle():
             sm.push_command(sid, PromptCommand(text="a", command_id="1"))
             sm.push_command(sid, PromptCommand(text="b", command_id="2"))
             sm.run_refill_cycle(sid, watermark_frames=100, max_chunks=2)
+        sm.stop_session(sid)
+        st = json.loads(open(Path(tmp) / sid / "stream_status.json").read())
+        assert st["phase"] == "done"
+
+
+# ---- 012: multi-command sequence smoke --------------------------------------
+
+def test_three_commands_replay_append():
+    """running session accepts 3 commands with APPEND mode."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="a", command_id="1",
+                transition_mode="append",
+                trajectory=TrajectoryCondition(
+                    waypoints=[TrajectoryPoint(t=0, x=0, y=0, z=0),
+                               TrajectoryPoint(t=1, x=1, y=0, z=0)])))
+            sm.push_command(sid, PromptCommand(text="b", command_id="2",
+                transition_mode="append"))
+            sm.push_command(sid, PromptCommand(text="c", command_id="3",
+                transition_mode="append"))
+
+            ctx = sm._sessions[sid]
+            assert len(ctx.timeline.transitions) == 2
+            assert ctx.timeline.active_command_id == "3"
+
+            # REFILL: APPEND mode → pending promoted on refill, then new command used
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=3)
+            # After refill at least 3 chunks from 3 commands should exist
+            session_dir = Path(tmp) / sid
+            assert len(list(session_dir.glob("chunk_*.npz"))) >= 3
+
+
+def test_replace_mode_switches_immediately():
+    """REPLACE mode: new command replaces active immediately."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="old", command_id="1"))
+            assert planner._driver.session.command.text == "old"
+
+            sm.push_command(sid, PromptCommand(text="new", command_id="2",
+                transition_mode="replace"))
+            # REPLACE should immediately switch the planner session's active command
+            assert planner._driver.session.command.text == "new"
+            assert not planner._driver.session.has_pending
+
+
+def test_append_mode_sets_pending():
+    """APPEND mode: new command becomes pending, not active yet."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="first", command_id="1"))
+            sm.push_command(sid, PromptCommand(text="second", command_id="2",
+                transition_mode="append"))
+            # APPEND: old command still active, new command is pending
+            assert planner._driver.session.command.text == "first"
+            assert planner._driver.session.has_pending
+            assert planner._driver.session.pending_command.text == "second"
+
+            # Refill promotes pending
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=1)
+            assert planner._driver.session.command.text == "second"
+            assert not planner._driver.session.has_pending
+
+
+def test_refill_keeps_working_after_three_commands():
+    """After 3 commands, refill still produces chunks without restart."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="a", command_id="1"))
+            sm.push_command(sid, PromptCommand(text="b", command_id="2"))
+            sm.push_command(sid, PromptCommand(text="c", command_id="3"))
+
+            # Multiple refill cycles should all succeed
+            for _ in range(5):
+                sm.run_refill_cycle(sid, watermark_frames=500, max_chunks=1)
+
+            session_dir = Path(tmp) / sid
+            assert len(list(session_dir.glob("chunk_*.npz"))) >= 5
+
+
+def test_lifecycle_preserved_after_three_commands():
+    """Three commands → stop → stream_status is done."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend, planner, coordinator, sm, sid, p = _setup(tmp)
+        with p:
+            sm.push_command(sid, PromptCommand(text="a", command_id="1"))
+            sm.push_command(sid, PromptCommand(text="b", command_id="2"))
+            sm.push_command(sid, PromptCommand(text="c", command_id="3"))
+            sm.run_refill_cycle(sid, watermark_frames=200, max_chunks=3)
         sm.stop_session(sid)
         st = json.loads(open(Path(tmp) / sid / "stream_status.json").read())
         assert st["phase"] == "done"
