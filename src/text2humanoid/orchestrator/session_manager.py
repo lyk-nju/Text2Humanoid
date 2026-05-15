@@ -55,19 +55,38 @@ class SessionManager:
 
     def push_command(self, session_id: str, command: PromptCommand) -> None:
         ctx = self._sessions[session_id]
-        ctx.timeline.append(command)
+        trans_rec = ctx.timeline.append(command)
         if self._coordinator is None:
             return
-        if can_transition(ctx.status.phase, SessionPhase.WARMING.value) and ctx.status.phase == SessionPhase.IDLE.value:
+
+        is_first = ctx.status.phase == SessionPhase.IDLE.value
+        if can_transition(ctx.status.phase, SessionPhase.WARMING.value) and is_first:
             ctx.status = self._coordinator.warmup(session_id, command.text)
-        # Start planner session for continuous streaming
+
+        # Planner session: first command starts, subsequent commands transition
         if self._coordinator.planner is not None:
             driver = getattr(self._coordinator.planner, "_driver", None)
-            if driver is not None and driver.session is None:
-                driver.start_session(command)
+            if driver is not None:
+                if driver.session is None:
+                    driver.start_session(command)
+                elif trans_rec is not None:
+                    driver.transition(command)
+                    trans_rec.boundary_chunk_index = driver.session.chunk_index
+                    import time as _time
+                    trans_rec.transition_time = _time.time()
+
         ctx.status = self._coordinator.run_once(session_id, command, start_time=ctx.next_start_time)
         latest_chunk_end = float(ctx.status.metadata.get("latest_chunk_end_time", ctx.status.sim_time))
         ctx.next_start_time = max(ctx.next_start_time, latest_chunk_end)
+
+        # Push transition info to status
+        if trans_rec is not None:
+            ctx.status.metadata["transition"] = {
+                "previous_command_id": trans_rec.previous_command_id,
+                "new_command_id": trans_rec.new_command_id,
+                "boundary_chunk_index": trans_rec.boundary_chunk_index,
+            }
+        ctx.status.metadata["active_command_id"] = ctx.timeline.active_command_id
 
     def reset_session(self, session_id: str) -> None:
         ctx = self._sessions[session_id]

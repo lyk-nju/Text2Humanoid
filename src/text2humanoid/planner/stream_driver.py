@@ -43,6 +43,18 @@ class StreamPlannerDriver:
         self._session = PlannerSession(command=command)
         return self._session
 
+    def transition(self, command: PromptCommand) -> None:
+        """Replace the active command while preserving timeline continuity.
+
+        When a new command arrives in a running session, this replaces the
+        planner's active command without resetting chunk_index or
+        next_start_time, so the next generated chunk continues the timeline.
+        """
+        if self._session is None:
+            self.start_session(command)
+        else:
+            self._session.command = command
+
     def reset(self) -> None:
         self._session = None
 
