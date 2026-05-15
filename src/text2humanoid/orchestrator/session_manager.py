@@ -82,23 +82,49 @@ class SessionManager:
     def run_refill_cycle(self, session_id: str, watermark_frames: int = 20, max_chunks: int = 10) -> int:
         """Produce additional chunks if the runtime buffer is below watermark.
 
-        Reuses the last command from the session timeline as the template for
-        each pipeline run.  Returns the number of chunks produced.
+        Uses the planner's session streaming state (StreamPlannerDriver) when
+        available.  Falls back to replaying the last command if no planner
+        session is active.
         """
         ctx = self._sessions[session_id]
         if self._coordinator is None:
             return 0
+
+        # Prefer planner-native session streaming
+        driver = getattr(self._coordinator.planner, "_driver", None)
+        driver_session = driver.session if driver is not None else None
+
         chunks_produced = 0
         for _ in range(max_chunks):
             status = self._coordinator.runtime.get_status(session_id)
             if status.buffer_frames >= watermark_frames:
                 break
-            last_cmd = ctx.timeline.latest_command
-            if last_cmd is None:
-                break
-            ctx.status = self._coordinator.run_once(session_id, last_cmd, start_time=ctx.next_start_time)
-            latest_chunk_end = float(ctx.status.metadata.get("latest_chunk_end_time", ctx.status.sim_time))
-            ctx.next_start_time = max(ctx.next_start_time, latest_chunk_end)
+
+            if driver is not None and driver_session is not None:
+                chunk = driver.generate_next_chunk()
+                if chunk is None:
+                    break
+                from text2humanoid.retarget.bridge_263_to_140 import human_chunk_to_nmr_input
+                nmr_chunk = human_chunk_to_nmr_input(chunk, tgt_fps=self._coordinator.retarget.output_fps)
+                result = self._coordinator.retarget.retarget_chunk(nmr_chunk)
+                ref_chunk = self._coordinator.adapter.from_nmr_result(
+                    chunk_id=chunk.chunk_id,
+                    start_time=nmr_chunk.start_time,
+                    fps=self._coordinator.retarget.output_fps,
+                    result=result,
+                )
+                self._coordinator.runtime.push_reference_chunk(session_id, ref_chunk)
+                ctx.status = self._coordinator.runtime.get_status(session_id)
+                ctx.next_start_time = driver_session.next_start_time
+            else:
+                # Fallback: replay last command
+                last_cmd = ctx.timeline.latest_command
+                if last_cmd is None:
+                    break
+                ctx.status = self._coordinator.run_once(session_id, last_cmd, start_time=ctx.next_start_time)
+                latest_chunk_end = float(ctx.status.metadata.get("latest_chunk_end_time", ctx.status.sim_time))
+                ctx.next_start_time = max(ctx.next_start_time, latest_chunk_end)
+
             chunks_produced += 1
             if ctx.status.phase in (SessionPhase.ERROR.value, SessionPhase.STOPPED.value):
                 break

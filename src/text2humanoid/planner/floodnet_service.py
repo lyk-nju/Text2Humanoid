@@ -12,6 +12,7 @@ from text2humanoid.contracts.commands import PromptCommand
 from text2humanoid.infra.logging import get_logger
 from text2humanoid.infra.paths import get_floodnet_root
 from text2humanoid.planner.prompt_transition import resolve_chunk_frames
+from text2humanoid.planner.stream_driver import PlannerSession, StreamPlannerDriver
 from text2humanoid.planner.traj_conditioning import build_floodnet_model_input
 
 _LOG = get_logger("text2humanoid.planner")
@@ -28,6 +29,7 @@ class FloodNetPlannerService:
         self.config_path = config_path
         self.chunk_frames = int(chunk_frames)
         self._loaded = False
+        self._driver = StreamPlannerDriver(self)
         self._vae = None
         self._model = None
         self._device = "cpu"
