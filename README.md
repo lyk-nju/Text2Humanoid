@@ -803,7 +803,7 @@ PYTHONPATH=src python -m pytest tests/ -q
 
 当前测试通过状态：
 
-- `136 passed`
+- `142 passed`
 
 ## 14. 依赖与安装
 
@@ -998,7 +998,7 @@ uv run src/deploy.py --sim2sim \
 
 - TCP socket 桥接在极端网络条件下尚未压测
 - 在线 bridge 的长稳运行尚未经过长时间考验
-- consumer 侧 `timeout / disconnect` 语义还缺专门 smoke 锁定
+- consumer 侧 `timeout / disconnect` 语义已经有最小真实 smoke，但还没有经过更长时间压力验证
 
 ## 17. 下一步建议
 
@@ -1006,11 +1006,10 @@ uv run src/deploy.py --sim2sim \
 
 下一步推荐顺序：
 
-1. 补 consumer 侧 `timeout / disconnect` 的真实 smoke
-2. 收紧 socket 主线的 stop / timeout / error / disconnect 语义
-3. 保持现有 source contract 和两条路径稳定
-4. 为长稳运行和异常边界补最小回归保护
-5. 等核心系统主线基本收口后，再启动三段式 pipeline integration testing
+1. 启动独立的三段式 pipeline integration testing
+2. 先落地 `Stage A: 文本 + 轨迹 -> FloodNet 输出验证`
+3. 保持现有 source contract 和两条 runtime 路径稳定
+4. 再按 `Stage B -> Stage C` 逐段推进
 
 不要在刚完成 socket 主线提升后立刻跳进”大而全”的真实仿真测试。
 
@@ -1030,4 +1029,4 @@ uv run src/deploy.py --sim2sim \
 
 ## 19. 一句话总结
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade、最小在线 runtime bridge，以及 socket 默认 demo 主线跑通了，file-based fallback 路径继续可用。当前下一步的主战场是把 consumer 侧 `timeout / disconnect` 语义也锁进真实 smoke，再继续收紧 socket 主线的运行期边界，而不是过早切到系统级 pipeline testing。
+`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade、最小在线 runtime bridge、socket 默认 demo 主线，以及 socket 生命周期边界的最小 smoke 跑通了，file-based fallback 路径继续可用。下一步的主战场不再是继续补局部 runtime 细节，而是正式启动分阶段 pipeline integration testing，并先从 Stage A 开始。
