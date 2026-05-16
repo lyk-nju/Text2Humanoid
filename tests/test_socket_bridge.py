@@ -12,6 +12,7 @@ import time
 import numpy as np
 
 from text2humanoid.contracts.clips import G1ReferenceChunk
+from text2humanoid.contracts.status import RuntimeStatus
 from text2humanoid.runtime.socket_backend import SocketBackend
 
 
@@ -193,3 +194,112 @@ def test_consumer_no_directory_scanning():
         assert "chunk_id" in r
         assert r["joint_pos_shape"] == (6, 29)
     client.close(); backend.close()
+
+
+# ---- Lifecycle & error boundary smoke (Task 016) ----
+
+
+def test_socket_backend_lifecycle_running_to_done():
+    """mark_stream_done transitions phase from running to stopped."""
+    backend = SocketBackend(host="127.0.0.1", port=15562)
+    backend.ensure_session("s1")
+    assert backend.get_phase("s1") == "running"
+    assert backend.get_status("s1").phase == "running"
+
+    backend.mark_stream_done("s1")
+    assert backend.get_phase("s1") == "done"
+    assert backend.get_status("s1").phase == "stopped"
+
+
+def test_socket_backend_lifecycle_running_to_error():
+    """mark_stream_error transitions phase to error with reason."""
+    backend = SocketBackend(host="127.0.0.1", port=15563)
+    backend.ensure_session("s1")
+    assert backend.get_phase("s1") == "running"
+
+    backend.mark_stream_error("s1", reason="consumer disconnected")
+    assert backend.get_phase("s1") == "error"
+    st = backend.get_status("s1")
+    assert st.phase == "error"
+    assert any("consumer disconnected" in e for e in st.errors)
+
+
+def test_socket_backend_send_without_consumer_records_error():
+    """push_reference_chunk with no consumer connected records error."""
+    backend = SocketBackend(host="127.0.0.1", port=15564)
+    backend.ensure_session("s1")
+    backend.push_reference_chunk("s1", _make_ref(6))
+    st = backend.get_status("s1")
+    assert st.buffer_frames == 6
+    assert any("no consumer" in e for e in st.errors)
+
+
+def test_socket_backend_close_marks_active_sessions_error():
+    """close() marks all non-done sessions as error."""
+    backend = SocketBackend(host="127.0.0.1", port=15565)
+    backend.ensure_session("s1")
+    backend.ensure_session("s2")
+    backend.mark_stream_done("s2")
+
+    backend.close()
+
+    assert backend.get_phase("s1") == "error"
+    assert backend.get_phase("s2") == "done"
+    st1 = backend.get_status("s1")
+    assert st1.phase == "error"
+    assert any("producer socket closed" in e for e in st1.errors)
+
+
+def test_socket_backend_reset_clears_error():
+    """reset_session clears error phase back to idle."""
+    backend = SocketBackend(host="127.0.0.1", port=15566)
+    backend.ensure_session("s1")
+    backend.mark_stream_error("s1", "test error")
+    assert backend.get_phase("s1") == "error"
+
+    backend.reset_session("s1")
+    assert backend.get_phase("s1") == "running"
+    st = backend.get_status("s1")
+    assert st.phase == "idle"
+    assert st.buffer_frames == 0
+
+
+def test_socket_backend_connected_property():
+    """connected property reflects consumer connection state."""
+    import time as time_mod
+    port = 15567
+    backend = SocketBackend(host="127.0.0.1", port=port)
+    assert not backend.connected
+
+    # Set up server and accept a consumer synchronously
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(1)
+    srv.settimeout(2.0)
+
+    backend._server = srv
+    backend._statuses["s1"] = RuntimeStatus(session_id="s1")
+    backend._phases["s1"] = backend.STREAM_PHASE_RUNNING
+    backend._chunk_counts["s1"] = 0
+
+    def _connect():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(("127.0.0.1", port))
+        time_mod.sleep(0.3)
+        s.close()
+
+    t = threading.Thread(target=_connect, daemon=True)
+    t.start()
+
+    try:
+        conn, _ = srv.accept()
+        conn.settimeout(2.0)
+        backend._client = conn
+    except socket.timeout:
+        pass
+
+    t.join(timeout=2.0)
+    assert backend.connected
+    backend.close()
