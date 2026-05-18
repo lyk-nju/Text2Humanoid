@@ -68,6 +68,11 @@ def validate_joint_mapping(dataset_joint_names: list[str]) -> None:
 
 def _add_paths() -> None:
     ensure_make_tracking_easy_paths()
+    mte_src = str(get_make_tracking_easy_root() / "src")
+    if mte_src in sys.path:
+        sys.path.remove(mte_src)
+    sys.path.insert(0, mte_src)
+    sys.modules.pop("utils", None)
     path = str(get_motion_tracking_root())
     if path not in sys.path:
         sys.path.insert(0, path)
