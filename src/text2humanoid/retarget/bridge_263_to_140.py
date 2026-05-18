@@ -6,15 +6,18 @@ import numpy as np
 import torch
 
 from text2humanoid.contracts.chunks import HumanMotionChunk, NMRInputChunk
-from text2humanoid.infra.paths import get_floodnet_root
+from text2humanoid.infra.paths import get_floodnet_root, get_make_tracking_easy_root
 from text2humanoid.retarget.mte_imports import ensure_make_tracking_easy_paths
 
 
 def _ensure_paths() -> None:
+    # Order matters: ensure_make_tracking_easy_paths inserts MakeTrackingEasy/src
+    # which itself contains a utils/ package.  FloodNet must be inserted AFTER
+    # so that "from utils.motion_process" resolves to FloodNet, not MTE.
+    ensure_make_tracking_easy_paths()
     root_path = str(get_floodnet_root())
     if root_path not in sys.path:
         sys.path.insert(0, root_path)
-    ensure_make_tracking_easy_paths()
 
 
 def _resample_linear(x: torch.Tensor, src_fps: float, tgt_fps: float) -> torch.Tensor:
@@ -36,7 +39,20 @@ def _yaw_encoding_to_rot6d(yaw_encoding: torch.Tensor) -> torch.Tensor:
     This function builds the rotation matrix from just the cos/sin components.
     """
     _ensure_paths()
+    # rotation_conversions lives in MakeTrackingEasy/src/utils, but
+    # earlier imports from FloodNet utils cached sys.modules['utils'].
+    # Temporarily promote MTE's utils and clear the cache so the import
+    # resolves to MTE instead of FloodNet.
+    mte_src = str(get_make_tracking_easy_root() / "src")
+    _prev_order = sys.path.copy()
+    _cached_utils = sys.modules.pop("utils", None)
+    if mte_src in sys.path:
+        sys.path.remove(mte_src)
+    sys.path.insert(0, mte_src)
     from utils.rotation_conversions import matrix_to_rotation_6d
+    sys.path[:] = _prev_order
+    if _cached_utils is not None:
+        sys.modules["utils"] = _cached_utils
 
     cos_a = yaw_encoding[:, 0]
     sin_a = yaw_encoding[:, 2]
