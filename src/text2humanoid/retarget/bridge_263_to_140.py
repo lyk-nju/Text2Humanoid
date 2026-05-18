@@ -35,8 +35,9 @@ def _yaw_encoding_to_rot6d(yaw_encoding: torch.Tensor) -> torch.Tensor:
     """Convert FloodNet yaw/heading encoding to 6D rotation representation.
 
     FloodNet's recover_root_rot_pos outputs a 4-element encoding (cos, 0, sin, 0)
-    that encodes only yaw rotation around the Y axis, not a general quaternion.
-    This function builds the rotation matrix from just the cos/sin components.
+    that is a yaw-only quaternion around the Y axis.  The stored cos/sin are
+    quaternion half-angle components, so the rotation matrix must use the
+    doubled-angle terms.
     """
     _ensure_paths()
     # rotation_conversions lives in MakeTrackingEasy/src/utils, but
@@ -54,14 +55,18 @@ def _yaw_encoding_to_rot6d(yaw_encoding: torch.Tensor) -> torch.Tensor:
     if _cached_utils is not None:
         sys.modules["utils"] = _cached_utils
 
-    cos_a = yaw_encoding[:, 0]
-    sin_a = yaw_encoding[:, 2]
-    zeros = torch.zeros_like(cos_a)
-    ones = torch.ones_like(cos_a)
+    q = yaw_encoding.float()
+    norm = torch.linalg.norm(q[:, [0, 2]], dim=-1).clamp_min(1e-8)
+    half_cos = q[:, 0] / norm
+    half_sin = q[:, 2] / norm
+    cos_yaw = half_cos * half_cos - half_sin * half_sin
+    sin_yaw = 2.0 * half_cos * half_sin
+    zeros = torch.zeros_like(cos_yaw)
+    ones = torch.ones_like(cos_yaw)
     rot = torch.stack(
-        [cos_a, zeros, sin_a,
+        [cos_yaw, zeros, sin_yaw,
          zeros, ones, zeros,
-         -sin_a, zeros, cos_a],
+         -sin_yaw, zeros, cos_yaw],
         dim=-1,
     ).view(-1, 3, 3)
     return matrix_to_rotation_6d(rot)
