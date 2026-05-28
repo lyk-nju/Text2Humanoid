@@ -15,6 +15,7 @@ from text2humanoid.contracts.bfmzero import BFMZeroMotionChunk
 from text2humanoid.contracts.chunks import NMRInputChunk
 from text2humanoid.contracts.pipeline import GenerateRequest, GenerateSpec, GeneratedMotion, MultimodalInput, TextInput
 from text2humanoid.demo.console_controller import StreamJobRequest
+from text2humanoid.retarget.bfmzero_adapter import attach_bfmzero_contract_metadata
 from text2humanoid.runtime.streaming_bfmzero_publisher import StreamingBFMZeroPublisher
 
 
@@ -143,12 +144,25 @@ class StreamingRetargetBridge:
             tgt_fps=float(self.retarget_fps),
         )
         motion_140_np = _as_numpy(motion_140)
+        nmr_metadata = dict(motion.metadata)
+        nmr_metadata.update(
+            {
+                "source_chunk_id": motion.motion_id,
+                "source_representation": motion.representation,
+                "source_fps": float(motion.fps),
+                "target_fps": float(self.retarget_fps),
+                "representation": "nmr_smplx_140",
+                "frame_count": int(motion_140_np.shape[0]),
+                "motion_shape": tuple(int(x) for x in motion_140_np.shape),
+                "duration_sec": float(motion_140_np.shape[0]) / float(self.retarget_fps),
+            }
+        )
         nmr_chunk = NMRInputChunk(
             chunk_id=motion.motion_id,
             start_time=max(0.0, motion.start_time - self._context_263.shape[0] / float(motion.fps)),
             fps=int(round(self.retarget_fps)),
             motion_140=motion_140_np,
-            metadata=dict(motion.metadata),
+            metadata=nmr_metadata,
         )
         result = self.retarget.retarget_chunk(nmr_chunk)
         full_chunk = self.convert_retarget_to_bfmzero(
@@ -165,6 +179,13 @@ class StreamingRetargetBridge:
         new_output_frames = max(1, int(round(new_seconds * float(full_chunk.fps))))
         tail_start = max(0, full_chunk.num_frames - new_output_frames)
         out = _slice_bfmzero_chunk(full_chunk, tail_start, self._next_frame_idx, motion.motion_id)
+        attach_bfmzero_contract_metadata(
+            out,
+            source_chunk_id=motion.motion_id,
+            source_representation=motion.representation,
+            source_fps=float(self.retarget_fps),
+            target_fps=float(self.output_fps),
+        )
         out.metadata.update(
             {
                 "source_motion_id": motion.motion_id,

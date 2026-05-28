@@ -133,15 +133,39 @@ def floodnet_263_to_nmr_140(
     return assemble_nmr_motion(joint_pos, root_quat, src_fps=src_fps, tgt_fps=tgt_fps)
 
 
+def _as_numpy(value) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    return np.asarray(value, dtype=np.float32)
+
+
 def human_chunk_to_nmr_input(
     chunk: HumanMotionChunk,
     tgt_fps: int = 30,
 ) -> NMRInputChunk:
     motion_140 = floodnet_263_to_nmr_140(chunk.motion_263, src_fps=float(chunk.fps), tgt_fps=float(tgt_fps))
+    motion_140_np = _as_numpy(motion_140)
+    metadata = dict(chunk.metadata)
+    metadata.update(
+        {
+            "source_chunk_id": chunk.chunk_id,
+            "source_representation": "humanml3d_263",
+            "source_fps": int(chunk.fps),
+            "target_fps": int(tgt_fps),
+            "representation": "nmr_smplx_140",
+            "frame_count": int(motion_140_np.shape[0]),
+            "motion_shape": (int(motion_140_np.shape[0]), int(motion_140_np.shape[1])),
+            "duration_sec": float(motion_140_np.shape[0]) / float(tgt_fps),
+        }
+    )
     return NMRInputChunk(
         chunk_id=chunk.chunk_id,
         start_time=chunk.start_time,
         fps=tgt_fps,
-        motion_140=motion_140.cpu().numpy(),
-        metadata=dict(chunk.metadata),
+        motion_140=motion_140_np,
+        metadata=metadata,
     )
