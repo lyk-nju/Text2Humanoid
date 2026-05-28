@@ -289,6 +289,7 @@ class StreamingTextToBFMZeroRunner:
         last_text = request.text
         pending: list[GeneratedMotion] = []
         pending_frames = 0
+        min_viable_retarget_frames = 4
         min_retarget_frames = max(4, int(request.chunk_frames))
         try:
             while not should_stop():
@@ -322,6 +323,8 @@ class StreamingTextToBFMZeroRunner:
                         "buffer_frames": self._publisher_queued_frames(),
                     },
                 )
+                if pending_frames < min_viable_retarget_frames:
+                    continue
                 if pending_frames < min_retarget_frames and not self._publisher_needs_refill():
                     continue
 
