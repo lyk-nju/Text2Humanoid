@@ -9,6 +9,8 @@ import torch
 from text2humanoid.contracts.chunks import NMRInputChunk
 from text2humanoid.infra.paths import get_make_tracking_easy_root
 
+_MIN_FILTER_FRAMES = 16
+
 
 def _add_nmr_path() -> None:
     path = str(get_make_tracking_easy_root())
@@ -57,6 +59,7 @@ class NMRRetargetService:
         self._load()
         _add_nmr_path()
         smplx_motion = torch.from_numpy(np.asarray(chunk.motion_140, dtype=np.float32))
+        effective_apply_filter = self.apply_filter and smplx_motion.shape[0] >= _MIN_FILTER_FRAMES
 
         try:
             from inference import infer_from_tensor
@@ -72,7 +75,7 @@ class NMRRetargetService:
                 self._g1_mean,
                 self._g1_std,
                 self._device,
-                apply_filter=self.apply_filter,
+                apply_filter=effective_apply_filter,
             )
             if result is None:
                 raise RuntimeError("NMR retarget returned no result")
@@ -137,7 +140,7 @@ class NMRRetargetService:
 
         pred_motion = pred_motion[:T_orig]
         pred_dof, pred_rot_quat, pred_trans = postprocess_g1(
-            pred_motion, apply_filter=self.apply_filter,
+            pred_motion, apply_filter=effective_apply_filter,
         )
 
         result: dict[str, Any] = {
