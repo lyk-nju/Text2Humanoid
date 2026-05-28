@@ -13,9 +13,23 @@ from text2humanoid.runtime.bfmzero_zmq_sink import BFMZeroZmqSink
 
 
 @dataclass(slots=True)
+class FutureBufferStatus:
+    phase: str
+    queued_frames: int
+    low_watermark_frames: int
+    target_buffer_frames: int
+    expected_frame_idx: int | None
+    frames_enqueued: int
+    frames_dequeued: int
+
+
+@dataclass(slots=True)
 class BFMZeroFrameBuffer:
     """Thread-safe FIFO for contiguous BFM-Zero motion frames."""
 
+    low_watermark_frames: int = 0
+    target_buffer_frames: int = 0
+    fps: float = 50.0
     _frames: deque[BFMZeroMotionFrame] = field(init=False, repr=False)
     _condition: threading.Condition = field(init=False, repr=False)
     _next_frame_idx: int | None = field(init=False, default=None)
@@ -24,6 +38,9 @@ class BFMZeroFrameBuffer:
     frames_dequeued: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
+        self.low_watermark_frames = max(0, int(self.low_watermark_frames))
+        self.target_buffer_frames = max(0, int(self.target_buffer_frames))
+        self.fps = float(self.fps)
         self._frames = deque()
         self._condition = threading.Condition()
 
@@ -68,10 +85,38 @@ class BFMZeroFrameBuffer:
         with self._condition:
             return len(self._frames)
 
+    def needs_refill(self) -> bool:
+        with self._condition:
+            return len(self._frames) < self.low_watermark_frames
+
+    def status(self) -> FutureBufferStatus:
+        with self._condition:
+            queued = len(self._frames)
+            if queued == 0:
+                phase = "underrun"
+            elif self.low_watermark_frames > 0 and queued < self.low_watermark_frames:
+                phase = "low"
+            elif self.target_buffer_frames > 0 and queued >= self.target_buffer_frames:
+                phase = "target"
+            else:
+                phase = "ready"
+            return FutureBufferStatus(
+                phase=phase,
+                queued_frames=queued,
+                low_watermark_frames=self.low_watermark_frames,
+                target_buffer_frames=self.target_buffer_frames,
+                expected_frame_idx=self._next_frame_idx,
+                frames_enqueued=self.frames_enqueued,
+                frames_dequeued=self.frames_dequeued,
+            )
+
     def close(self) -> None:
         with self._condition:
             self._closed = True
             self._condition.notify_all()
+
+
+RuntimeFutureBuffer = BFMZeroFrameBuffer
 
 
 @dataclass(slots=True)
@@ -105,6 +150,10 @@ class StreamingBFMZeroPublisher:
     @property
     def queued_frames(self) -> int:
         return self._buffer.qsize()
+
+    @property
+    def buffer_status(self) -> FutureBufferStatus:
+        return self._buffer.status()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():

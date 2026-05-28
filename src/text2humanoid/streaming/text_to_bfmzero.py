@@ -15,8 +15,9 @@ from text2humanoid.contracts.bfmzero import BFMZeroMotionChunk
 from text2humanoid.contracts.chunks import NMRInputChunk
 from text2humanoid.contracts.pipeline import GenerateRequest, GenerateSpec, GeneratedMotion, MultimodalInput, TextInput
 from text2humanoid.demo.console_controller import StreamJobRequest
+from text2humanoid.infra.streaming_config import load_streaming_timing_config
 from text2humanoid.retarget.bfmzero_adapter import attach_bfmzero_contract_metadata
-from text2humanoid.runtime.streaming_bfmzero_publisher import StreamingBFMZeroPublisher
+from text2humanoid.runtime.streaming_bfmzero_publisher import RuntimeFutureBuffer, StreamingBFMZeroPublisher
 
 
 def _as_numpy(value: Any) -> np.ndarray:
@@ -377,10 +378,10 @@ def build_streaming_text_to_bfmzero_runner(
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     root = _resolve_root_path(cfg)
+    timing = load_streaming_timing_config(cfg)
     retarget_cfg = cfg.get("retarget", {})
-    runtime_cfg = cfg.get("runtime", {})
-    retarget_fps = float(retarget_cfg.get("tgt_fps", 30))
-    output_fps = float(runtime_cfg.get("control_hz", 50))
+    retarget_fps = float(timing.retarget_fps)
+    output_fps = float(timing.runtime_fps)
     xml_path = str(_resolve_path(root, retarget_cfg.get("xml_path", "MakeTrackingEasy/assets/g1_mocap_29dof.xml")))
 
     text_update_callback = None
@@ -413,6 +414,11 @@ def build_streaming_text_to_bfmzero_runner(
         realtime=True,
         fps=output_fps,
         startup_delay_sec=float(startup_delay_sec),
+        buffer=RuntimeFutureBuffer(
+            low_watermark_frames=timing.low_watermark_frames,
+            target_buffer_frames=timing.target_buffer_frames,
+            fps=output_fps,
+        ),
     )
     return StreamingTextToBFMZeroRunner(
         generation_backend=generation,
