@@ -1,6 +1,27 @@
-**/__pycache__/
-*.pyc
-*.pyo
-.venv/
-*.egg-info/
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime artifacts
 artifacts/
+assets/saved/
+assets/video/
+assets/save/
+assets/*.npy
+assets/*.npz
+*.log
+*.keys
+
+# Heavy local outputs/checkpoints
+*.mp4
+*.pt
+*.pth
+
+# Keep small fixtures versionable.
+!tests/fixtures/**/*.npy
+!tests/fixtures/**/*.npz
+!assets/fixtures/**/*.npy
+!assets/fixtures/**/*.npz

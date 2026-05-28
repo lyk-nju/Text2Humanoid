@@ -1,1032 +1,835 @@
 # Text2Humanoid
 
-`Text2Humanoid` 是一个总控工程。它本身不训练上游模型，也不重写下游 tracker，而是把三个已有项目按清晰接口接起来：
+Text2Humanoid 是一个用于文本驱动人形机器人动作生成的研究 demo 总控工程。
 
-- `FloodNet`：文本 + 轨迹到 human motion
-- `MakeTrackingEasy`：human motion 到 G1 reference motion
-- `motion_tracking`：G1 sim2sim tracking runtime
-
-这个工程的目标不是把三个仓库源码揉成一个仓库，而是提供一层稳定的编排、桥接、状态管理和调试基础设施，让后续可以逐步把系统推进到“在线流式文本驱动人形仿真”。
-
-## 1. 项目定位
-
-当前 `Text2Humanoid` 解决的是“系统怎么接起来”这个问题，而不是“某个单点模型怎么再提分”。
-
-它负责：
-
-- 定义跨模块的数据契约
-- 管理会话和状态机
-- 调用 `FloodNet` 生成 human motion chunk
-- 把 `FloodNet` 的 `263D` 动作桥接到 `MakeTrackingEasy` 的 `140D` 输入
-- 把 `MakeTrackingEasy` 输出适配成 `motion_tracking` 风格的 G1 reference motion
-- 维护 runtime 侧 future-horizon reference buffer
-- 对外暴露 HTTP + WebSocket 接口
-- 记录 artifact，便于回放和调试
-
-它明确不负责：
-
-- 改写 `FloodNet` 训练主线
-- 改写 `MakeTrackingEasy` 模型结构
-- 改写 `motion_tracking` 的策略训练逻辑
-- 直接做 sim2real
-
-## 2. 当前阶段目标
-
-第一阶段的边界已经固定：
-
-- 输入：`文本 + 轨迹`
-- 输出：`G1 reference motion chunks`
-- 部署：`单机单 GPU`
-- 服务形态：`长驻 HTTP + WebSocket`
-- 目标场景：`sim2sim`
-
-也就是说，这个仓库首先要成为一个“在线生成与桥接服务”。当前最小 demo 主线已经接通了 file-based runtime source；同时在线 runtime bridge 也已经最小闭环：主服务配置入口已能选择 `socket` backend，producer-side TCP smoke、consumer-side 协议模拟、`motion_tracking` 侧在线 consumer，以及真实 runtime-consumer smoke 都已经存在并能在当前标准验证环境里直接跑通。当前 socket bridge 已经提升为默认 demo 主线（`demo_socket.yaml`），`demo_fixed.yaml` 保留为 file-based fallback / debug 路径。
-
-## 3. 与三个外部仓库的关系
-
-这个工程默认以下三个 sibling repo 已存在：
-
-- `FloodNet`
-- `MakeTrackingEasy`
-- `motion_tracking`
-
-设计原则是：
-
-- `FloodNet` 只作为 planner backend，通过 Python wrapper 调用
-- `MakeTrackingEasy` 只作为 retarget backend，通过 `infer_from_tensor()` 调用
-- `motion_tracking` 只作为 execution backend，通过最小 patch 接入
-
-这样做的好处很直接：
-
-- 上游研究代码可以继续演化，不污染总控层
-- retarget 后端可以替换，不影响 API 和 session 逻辑
-- runtime 侧如果以后换 tracker，也只需要改 adapter 和 source protocol
-
-## 4. 当前实现状态
-
-当前仓库已经不是空骨架，而是一个可编译、可测试、可启动，并且能跑 fixed text + fixed trajectory demo、支持多次在线 command 序列最小语义的系统壳。
-
-已经实现的部分：
-
-- 完整的目录结构
-- `contracts` 数据契约
-- FastAPI HTTP/WebSocket 服务
-- session manager 和 pipeline coordinator
-- `FloodNet` wrapper
-- `263D -> 140D` 桥接逻辑
-- `MakeTrackingEasy` 推理 wrapper
-- `G1ReferenceChunk` 适配逻辑
-- runtime reference buffer
-- planner-native session streaming
-- 运行中 session 的最小受控 command transition
-- file-based runtime source（`floodnet_file` backend → `motion_tracking` `FloodNetMotionSource`）
-- 在线 runtime bridge（`SocketBackend` ↔ `SocketFloodNetSource` 最小主线已接通，producer-side TCP smoke、consumer-side 协议模拟，以及真实 runtime-consumer smoke 已可直接运行；`floodnet_file` 仍保留为 fallback / debug 路径）
-- artifact 导出
-- demo 配置、demo smoke 和最小 runbook
-- 基础测试
-
-已经修掉的关键工程问题：
-
-- 避免直接通过 `MakeTrackingEasy/src` 顶层包导入而把完整训练栈和 `mmengine` 拉进来
-- runtime buffer 按 `session` 隔离，不再全局共享
-- cross-fade 对 `root_pos / root_rot / dof_pos` 做 blend，再从 blend 后状态通过 FK 重建 `local_body`，保证 FK 一致性
-- `SessionManager` 现在按 chunk end time 推进下一段起始时间，而不是错误地拿 runtime 当前 `sim_time` 直接当 chunk 排程时间
-- refill loop 已优先依赖 planner session，而不是简单重放最后一条 command
-- `motion_tracking` 已能通过 session-scoped chunk 目录消费 `Text2Humanoid` 输出的 fixed clip / multi-chunk reference
-
-当前还没有真正完成的部分：
-
-- 还没有做更复杂的多次 prompt / trajectory 在线切换策略
-- `FloodNetPlannerService` 当前仍然是 `model.generate()` 的 session 包装，不是最终形态的 planner-native 长驻生成服务
-- waypoint 到 FloodNet 真实轨迹条件的高质量注入还比较薄，当前更偏“接口预留”
-- 还没有把 planner / retarget / runtime 拆成独立后台进程和稳定 IPC
-
-所以更准确地说，现在的 `Text2Humanoid` 已经是“可复现 demo 的 orchestrator scaffold”，但还不是“支持复杂在线交互的最终系统”。
-
-## 5. 项目结构
+当前项目已经跑通以下主线：
 
 ```text
-Text2Humanoid/
-├── pyproject.toml
-├── README.md
-├── configs/
-│   ├── system/
-│   ├── floodnet/
-│   ├── nmr/
-│   └── runtime/
-├── apps/
-├── src/text2humanoid/
-│   ├── contracts/
-│   ├── api/
-│   ├── orchestrator/
-│   ├── planner/
-│   ├── retarget/
-│   ├── runtime/
-│   ├── infra/
-│   └── evaluation/
-├── patches/
-│   └── motion_tracking/
-└── tests/
+FloodDiffusion
+  -> MakeTrackingEasy
+  -> BFM-Zero tracking_online
+  -> MuJoCo G1
 ```
 
-下面按模块说明职责。
-
-## 6. 模块职责
-
-### 6.1 `contracts/`
-
-路径：
-
-- [commands.py](./src/text2humanoid/contracts/commands.py)
-- [chunks.py](./src/text2humanoid/contracts/chunks.py)
-- [clips.py](./src/text2humanoid/contracts/clips.py)
-- [status.py](./src/text2humanoid/contracts/status.py)
-
-这是整个项目最重要的一层。它定义了系统内部允许跨模块传递的核心对象。
-
-主要契约：
-
-- `PromptCommand`
-  - 文本命令
-  - 轨迹条件
-  - 切换模式
-  - 提交时间
-  - 命令元数据
-- `TrajectoryCondition`
-  - `waypoints`
-  - `token_aligned_traj`
-  - `token_mask`
-- `HumanMotionChunk`
-  - `FloodNet` 生成后的 `(T, 263)` 动作片段
-  - 默认 `20 FPS`
-- `NMRInputChunk`
-  - 喂给 `MakeTrackingEasy` 的 `(T, 140)` 动作片段
-  - 默认 `30 FPS`
-- `G1ReferenceChunk`
-  - 面向 `motion_tracking` 风格 runtime 的 reference chunk
-  - 包含 `root_pos / root_rot / dof_pos / local_body_pos / local_body_rot / body_names / joint_names`
-- `RuntimeStatus`
-  - 当前 session 的阶段、buffer 水位、sim_time、延迟统计、错误信息等
-
-设计原则：
-
-- 一切跨模块数据都先落到契约对象，而不是 dict 到处乱传
-- quaternion 顺序明确写在元数据里
-- chunk 都带 `start_time / end_time / fps / num_frames`
-
-### 6.2 `api/`
-
-路径：
-
-- [http_routes.py](./src/text2humanoid/api/http_routes.py)
-- [schemas.py](./src/text2humanoid/api/schemas.py)
-- [ws_events.py](./src/text2humanoid/api/ws_events.py)
-
-这是对外控制面和观测面的定义。
-
-当前 HTTP 接口：
-
-- `POST /sessions`
-  - 创建一个新 session
-- `GET /sessions/{session_id}/status`
-  - 查询当前状态
-- `POST /sessions/{session_id}/commands`
-  - 推入一条文本/轨迹命令
-- `POST /sessions/{session_id}/refill/start`
-  - 启动后台 refill loop
-- `POST /sessions/{session_id}/refill/stop`
-  - 停止后台 refill loop
-- `POST /sessions/{session_id}/reset`
-  - 重置 session
-- `POST /sessions/{session_id}/stop`
-  - 停止 session
-- `POST /sessions/{session_id}/export`
-  - 导出当前状态 bundle
-
-当前 WebSocket 接口：
-
-- `GET ws://host:port/ws/{session_id}`
-  - 建立状态订阅连接
-
-当前 WebSocket 行为还比较轻量：
-
-- 建立连接时先发一条 `status`
-- 当 HTTP command / refill / reset / stop 被调用时，广播事件
-
-这意味着它已经具备“控制面 + 基本观测面”的壳，但还不是最终实时事件流系统。
-
-### 6.3 `orchestrator/`
-
-路径：
-
-- [session_manager.py](./src/text2humanoid/orchestrator/session_manager.py)
-- [pipeline_coordinator.py](./src/text2humanoid/orchestrator/pipeline_coordinator.py)
-- [timeline.py](./src/text2humanoid/orchestrator/timeline.py)
-- [state_machine.py](./src/text2humanoid/orchestrator/state_machine.py)
-
-这是系统核心调度层。
-
-职责拆分：
-
-- `SessionManager`
-  - 创建和管理 session
-  - 记录 timeline
-  - 接收 command
-  - 调用 coordinator 执行一次 pipeline
-- `PipelineCoordinator`
-  - 串联 planner -> bridge -> retarget -> adapter -> runtime
-  - 记录 planner / retarget / runtime 三段耗时
-- `timeline`
-  - 保存 session 内部的命令序列
-- `state_machine`
-  - 定义 `idle / warming / running / degraded / resetting / stopped / error`
-
-当前行为模型：
-
-- `push_command()` 是同步的
-- 每次命令会驱动一次 chunk 生成和一次 retarget
-- `next_start_time` 由上一 chunk 的结束时间推进
-- running session 上的第二条 command 已有最小 transition 语义：
-  - timeline 会记录 transition 边界
-  - planner session 会切到新的 active command
-  - refill loop 后续继续沿用新的 active command
-
-这套逻辑适合当前 scaffold 阶段，因为它先把数据边界和调度边界固定住了。后续如果要做真正后台 streaming loop，主要改这里和 runtime/source protocol。
-
-### 6.4 `planner/`
-
-路径：
-
-- [floodnet_service.py](./src/text2humanoid/planner/floodnet_service.py)
-- [stream_driver.py](./src/text2humanoid/planner/stream_driver.py)
-- [prompt_transition.py](./src/text2humanoid/planner/prompt_transition.py)
-- [traj_conditioning.py](./src/text2humanoid/planner/traj_conditioning.py)
-
-职责是把 `FloodNet` 变成可被总控层调用的 planner backend。
-
-当前已经实现：
-
-- 自动加载 `FloodNet` 配置、VAE、主模型和 EMA checkpoint
-- `warmup(text)`
-- `reset()`
-- `generate_chunk(command, start_time)`
-
-当前 planner 的实现方式：
-
-- 使用 `FloodNet` 的 `model.generate()` 生成整段 latent
-- 通过 VAE decode 得到 `(T, 263)` motion
-- 包装成 `HumanMotionChunk`
-
-需要明确的一点：
-
-- 这不是最终在线 streaming planner，只是第一版可工作的 planner wrapper
-- `stream_driver.py` 目前更像占位层，后续要承接真正的流式补帧逻辑
-
-### 6.5 `retarget/`
-
-路径：
-
-- [bridge_263_to_140.py](./src/text2humanoid/retarget/bridge_263_to_140.py)
-- [nmr_service.py](./src/text2humanoid/retarget/nmr_service.py)
-- [g1_reference_adapter.py](./src/text2humanoid/retarget/g1_reference_adapter.py)
-- [fk_features.py](./src/text2humanoid/retarget/fk_features.py)
-- [mte_imports.py](./src/text2humanoid/retarget/mte_imports.py)
-
-这是整个系统里算法风险最高的一层。
-
-它做四件事：
-
-1. `263D -> 22 joint + root`
-2. `22 joint + root -> 140D NMR input`
-3. `140D -> G1 dof/root`
-4. `G1 dof/root -> motion_tracking 风格 reference chunk`
-
-具体职责：
-
-- `bridge_263_to_140.py`
-  - 吸收原来根目录 `bridge.py` 的核心逻辑
-  - 将 `FloodNet` 的动作特征恢复到 joint space
-  - 组装 `MakeTrackingEasy` 需要的 `140D` 输入
-- `nmr_service.py`
-  - 最小包装 `MakeTrackingEasy/inference.py`
-  - 调用 `load_all()` 和 `infer_from_tensor()`
-- `fk_features.py`
-  - 读取 `motion_tracking` 的 `tracking.yaml`
-  - 使用 `MakeTrackingEasy` 的 `KinematicsModel`
-  - 计算 `body_pos_w / body_rot_w / local_body_pos / local_body_rot`
-- `g1_reference_adapter.py`
-  - 统一 root quaternion 顺序
-  - remap DOF 顺序
-  - 产出 `G1ReferenceChunk`
-- `mte_imports.py`
-  - 避免不必要的顶层导入副作用
-  - 保证只加载 retarget 必需的最小工具模块
-
-这一层最大的难点不是代码，而是语义对齐：
-
-- `FloodNet` 输出的人体表示和 `MakeTrackingEasy` 原始输入分布不一致
-- `motion_tracking` 期待的 reference 字段语义必须和它训练用数据一致
-
-所以任何“效果不稳”的问题，第一怀疑对象都应该是这一层，而不是先怪 tracker。
-
-### 6.6 `runtime/`
-
-路径：
-
-- [motion_tracking_client.py](./src/text2humanoid/runtime/motion_tracking_client.py)
-- [reference_buffer.py](./src/text2humanoid/runtime/reference_buffer.py)
-- [source_protocol.py](./src/text2humanoid/runtime/source_protocol.py)
-- [sync_manager.py](./src/text2humanoid/runtime/sync_manager.py)
-- [fallback_policy.py](./src/text2humanoid/runtime/fallback_policy.py)
-
-**重要：** 当前 runtime 层已经不再只有内存 shim。`MotionTrackingClient` 现在是一个 facade，后面可以挂：
-
-- `ShimBackend`
-  - 继续服务于单元测试和纯内存契约验证
-- `FloodNetFileBackend`
-  - 把 `G1ReferenceChunk` 按 session 写成 `chunk_*.npz`
-  - 由 `motion_tracking` 侧的 `FloodNetMotionSource` 消费
-
-也就是说，fixed demo 主线已经接上了最小真实 runtime source；但这仍然是 file-based bridge，不是最终的网络 source / 真正在线 streaming runtime API。
-
-当前 `MotionTrackingClient` / backend 层的职责：
-
-- 按 `session` 维护独立 reference buffer
-- 接受 `G1ReferenceChunk`
-- 维护 `buffer_frames`
-- 维护 `sim_time`
-- 支持 `consume_step()` 和 `reset_session()`
-- 对 file backend 额外维护：
-  - `chunk_index.json`
-  - `stream_status.json`
-  - session-scoped output dir
-
-当前 `ReferenceBuffer` 的职责：
-
-- append 新 chunk
-- 支持 overlap / cross-fade
-- 支持 horizon 读取
-- 支持 cursor 推进
-
-这里有两个重点：
-
-- 当前 facade 同时支持 shim 和 file backend
-- 真实 `motion_tracking` 已能通过 `FloodNetMotionSource` 消费 file backend 产出的 chunk 序列
-
-也就是说，下一步不再是“从零接 runtime”，而是要在已接通的 file-based 主线之上，继续收敛在线切换和更稳定的连续生成语义。
-
-### 6.7 `infra/`
-
-路径：
-
-- [paths.py](./src/text2humanoid/infra/paths.py) — 统一路径管理，`get_root()` / `set_root()`
-- [config_loader.py](./src/text2humanoid/infra/config_loader.py) — 路径解析 + 组件构建
-- [artifact_store.py](./src/text2humanoid/infra/artifact_store.py)
-- [clocks.py](./src/text2humanoid/infra/clocks.py)
-- [logging.py](./src/text2humanoid/infra/logging.py)
-- [process_manager.py](./src/text2humanoid/infra/process_manager.py)
-
-这是工程基础设施层。
-
-当前已经实现：
-
-- `ArtifactStore`
-  - 保存 JSON
-  - 保存 NPZ
-  - 导出状态 bundle
-- logging wrapper
-- 时钟工具占位
-- 进程管理占位
-
-当前 artifact 默认很轻，只存状态和数组。后续如果要做完整回放，需要继续把：
-
-- 原始 command
-- human motion chunk
-- NMR input
-- G1 reference chunk
-- runtime status timeline
-- 可视化视频
-
-都统一落盘。
-
-### 6.8 `evaluation/`
-
-路径：
-
-- [online_metrics.py](./src/text2humanoid/evaluation/online_metrics.py)
-- [buffer_metrics.py](./src/text2humanoid/evaluation/buffer_metrics.py)
-- [replay_checks.py](./src/text2humanoid/evaluation/replay_checks.py)
-
-这一层现在主要是结构占位，用来明确“在线系统的验收口径应该在这里，而不是复用 FloodNet 训练期 eval 脚本”。
-
-原则很重要：
-
-- 上游生成质量和下游执行稳定性要分开评估
-- 在线延迟、buffer 水位、切换平滑度要单独记录
-
-## 7. 数据流
-
-当前系统的标准数据流是：
-
-1. 客户端通过 HTTP 提交 `PromptCommand`
-2. `SessionManager` 将命令写入 timeline
-3. `PipelineCoordinator` 调用 `FloodNetPlannerService`
-4. planner 生成 `HumanMotionChunk`
-5. `bridge_263_to_140.py` 把其变成 `NMRInputChunk`
-6. `NMRRetargetService` 调用 `MakeTrackingEasy`
-7. `G1ReferenceAdapter` 产出 `G1ReferenceChunk`
-8. runtime buffer 接收 chunk，并做 overlap / cross-fade
-9. WebSocket 和状态接口返回 buffer / sim_time / latest_chunk 等信息
-
-更紧凑的链路表示如下：
+当前有两条可用路径：
 
 ```text
-HTTP PromptCommand
--> SessionManager
--> FloodNetPlannerService
--> HumanMotionChunk (T, 263)
--> bridge_263_to_140
--> NMRInputChunk (T, 140)
--> MakeTrackingEasy infer_from_tensor
--> G1 dof/root
--> G1ReferenceChunk
--> ReferenceBuffer
--> motion_tracking runtime source plugin (future)
+稳定验证路径:
+  text -> full motion artifact -> retarget -> BFM-Zero chunk -> replay
+
+实验流式路径:
+  text stream -> 263D chunks -> retarget windows -> BFM-Zero paced frame buffer
 ```
 
-## 8. 关键接口和数据语义
-
-### 8.1 `PromptCommand`
-
-核心字段：
-
-- `text`
-- `trajectory`
-- `submit_time`
-- `transition_mode`
-- `command_id`
-- `metadata`
-
-其中 `trajectory` 当前支持两类表达，通过 `TrajectoryCondition` 的 `to_source()` 进入统一的 `TrajectorySource` 接口：
-
-- `waypoints` — 高层来源，手工/UI 轨迹输入
-- `token_aligned_traj + token_mask` — 低层兼容来源，pre-computed FloodNet token 特征
-
-轨迹编译链：`TrajectoryCondition → TrajectorySource → CanonicalTrajectory → FloodNet adapter`，所有来源最终收敛到同一个中间表示 `CanonicalTrajectory`。
-
-### 8.2 `HumanMotionChunk`
-
-这是 `FloodNet` 和总控层之间的 canonical human-motion 片段。
-
-当前要求：
-
-- shape: `(T, 263)`
-- `fps = 20`
-- 带 `start_time`
-- 带 `text`
-
-### 8.3 `NMRInputChunk`
-
-这是喂给 `MakeTrackingEasy` 的桥接结果。
-
-当前要求：
-
-- shape: `(T, 140)`
-- `fps = 30`
-- 保持时间轴连续
-
-### 8.4 `G1ReferenceChunk`
-
-这是最重要的执行层契约。
-
-当前包含：
-
-- `root_pos`
-- `root_rot`
-- `dof_pos`
-- `local_body_pos`
-- `local_body_rot`
-- `body_names`
-- `joint_names`
-
-约定：
-
-- `root_rot` 使用 `xyzw`
-- `local_body_rot` 使用 `xyzw`
-- `dof_pos` 已经 remap 到 `motion_tracking` 期待的 joint order
-
-## 9. 配置文件说明
-
-### 9.1 路径解析规则
-
-所有路径配置（包括 `artifacts_root`、`planner.config_path`、`retarget.xml_path`、`runtime.tracking_config`）按统一规则解析：
-
-1. 绝对路径（以 `/` 开头）原样使用
-2. 相对路径统一相对于 `root_path` 解析
-
-`root_path` 的优先级：
-
-1. YAML 中的 `root_path` 字段（如果显式设置为非 `auto` 的路径）
-2. 环境变量 `TEXT2MOTION_ROOT`
-3. 自动检测（从 `paths.py` 位置向上找到包含 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 的工作区根目录）
-
-`--config` 参数（CLI）独立解析：
-
-- 绝对路径原样使用
-- 相对路径相对于 `Text2Humanoid/` 项目根目录（而非 cwd）
-- 目标：从任意 cwd 启动 API server，行为一致
-
-### 9.2 `configs/system/`
-
-系统级配置（这是唯一运行时真正加载的配置入口）：
-
-- [demo_socket.yaml](./configs/system/demo_socket.yaml)
-  - **默认推荐主线** — socket bridge 在线 runtime
-  - `runtime.backend: socket`，与 `motion_tracking` 侧 `socket_floodnet` 配套
-- [demo_fixed.yaml](./configs/system/demo_fixed.yaml)
-  - **fallback / debug 路径** — file-based (`floodnet_file` backend)
-  - 适合离线调试和文件系统消费
-- [local_dev.yaml](./configs/system/local_dev.yaml)
-  - 本机开发用
-  - `127.0.0.1:8080`
-  - planner chunk 比较保守
-- [sim2sim_single_gpu.yaml](./configs/system/sim2sim_single_gpu.yaml)
-  - 单机单 GPU 在线运行配置
-  - 更大的 chunk 和更高的 buffer watermark
-- [debug_replay.yaml](./configs/system/debug_replay.yaml)
-  - 调试模式
-  - 更小 horizon
-  - `retarget.apply_filter = false`
-  - 单独的调试 artifacts 目录
-
-关键字段：
-
-| 字段 | 说明 |
-|------|------|
-| `root_path` | 工作区根路径，`auto` 表示自动检测 |
-| `artifacts_root` | artifact 输出目录（相对 root_path） |
-| `host` / `port` | API 服务监听地址 |
-| `planner.config_path` | FloodNet 模型配置路径（相对 root_path） |
-| `planner.chunk_frames` | 每次生成的帧数 |
-| `retarget.apply_filter` | 是否启用 Butterworth 低通滤波 |
-| `retarget.tgt_fps` | 输出目标 FPS（传给 MakeTrackingEasy） |
-| `retarget.xml_path` | G1 运动学模型 XML 路径（相对 root_path） |
-| `runtime.tracking_config` | motion_tracking tracking.yaml 路径（相对 root_path） |
-| `runtime.control_hz` | 控制频率 |
-| `runtime.low_watermark_frames` | buffer 低水位（低于此值触发 DEGRADED） |
-| `runtime.high_watermark_frames` | buffer 高水位（高于此值恢复 RUNNING） |
-| `runtime.future_horizon_frames` | 前瞻帧数 |
-
-### 9.3 `configs/floodnet/planner.yaml`
-
-FloodNet planner 模板配置（字段已整合到 system config 中）。
-
-### 9.4 `configs/nmr/retarget.yaml`
-
-NMR retarget 模板配置（字段已整合到 system config 中）。
-
-### 9.5 `configs/runtime/motion_tracking.yaml`
-
-Runtime 模板配置（字段已整合到 system config 中）。
-
-## 10. 命令行入口
-
-### 10.1 启动 API 服务
-
-入口：
-
-- [apps/api_server.py](./apps/api_server.py)
-
-示例：
-
-```bash
-# 在任何目录下启动（推荐）
-PYTHONPATH=/path/to/Text2Humanoid/src \
-  python /path/to/Text2Humanoid/apps/api_server.py \
-  --config /path/to/Text2Humanoid/configs/system/local_dev.yaml
-
-# 或设置环境变量指定工作区
-TEXT2MOTION_ROOT=/path/to/workspace \
-  PYTHONPATH=/path/to/Text2Humanoid/src \
-  python /path/to/Text2Humanoid/apps/api_server.py \
-  --config /path/to/Text2Humanoid/configs/system/local_dev.yaml
-```
-
-这个脚本会：
-
-- 解析 `--config` 路径（独立于 cwd）
-- 读取系统配置，解析 `root_path`
-- 创建 `ArtifactStore`
-- 创建 planner / retarget / adapter / runtime / fallback / coordinator / session manager
-- 启动 FastAPI + Uvicorn
-
-### 10.2 创建 session 并发送一条命令
-
-入口：
-
-- [apps/launch_session.py](./apps/launch_session.py)
-
-示例：
-
-```bash
-cd /path/to/Text2Humanoid
-PYTHONPATH=src python apps/launch_session.py --text "walk forward slowly"
-```
-
-这个脚本会：
-
-- 调 `POST /sessions`
-- 再调 `POST /sessions/{id}/commands`
-- 打印 session id
-
-### 10.3 查看已保存的 reference NPZ
-
-入口：
-
-- [apps/replay_reference.py](./apps/replay_reference.py)
-
-示例：
-
-```bash
-cd /path/to/Text2Humanoid
-python apps/replay_reference.py path/to/reference_chunk.npz
-```
-
-### 10.4 创建 artifact 目录
-
-入口：
-
-- [apps/export_debug_bundle.py](./apps/export_debug_bundle.py)
-
-这个脚本目前比较简单，主要是 artifact 层的辅助入口。
-
-### 10.5 离线 reference replay
-
-入口：
-
-- [apps/replay_trajectory.py](./apps/replay_trajectory.py)
-
-**这是 runtime 接入前的离线检查里程碑，不是真实 sim2sim 已接通。**
-
-示例：
-
-```bash
-PYTHONPATH=src python apps/replay_trajectory.py \
-  --config configs/system/local_dev.yaml \
-  --text "walk forward slowly" \
-  --waypoints '[[0,0,0,0],[2,3,0,4]]' \
-  --replay-id demo_walk
-```
-
-该脚本会走完整 `FloodNet → bridge → MakeTrackingEasy → G1ReferenceChunk` 链路，
-并将所有中间结果导出为 inspectable artifact bundle。导出的 bundle 包含：
-
-- `command.json` — 输入命令与轨迹
-- `human_chunk.npz` — FloodNet 生成的 human motion (263D)
-- `reference_chunk.npz` — retarget 后的 G1 reference (root/dof/local body)
-- `metadata.json` — 形状、名字、耗时等诊断信息
-
-## 11. HTTP / WebSocket 用法
-
-### 11.1 创建 session
-
-```bash
-curl -X POST http://127.0.0.1:8080/sessions
-```
-
-返回：
-
-```json
-{"session_id":"..."}
-```
-
-### 11.2 推送命令
-
-```bash
-curl -X POST http://127.0.0.1:8080/sessions/<session_id>/commands \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "walk forward slowly",
-    "trajectory": {
-      "waypoints": [
-        {"t": 0.0, "x": 0.0, "y": 0.0, "z": 0.0},
-        {"t": 1.0, "x": 1.0, "y": 0.0, "z": 0.0}
-      ]
-    },
-    "transition_mode": "append"
-  }'
-```
-
-### 11.3 查看状态
-
-```bash
-curl http://127.0.0.1:8080/sessions/<session_id>/status
-```
-
-返回字段包括：
-
-- `phase`
-- `buffer_frames`
-- `sim_time`
-- `latest_chunk_id`
-- `planner_latency_ms`
-- `retarget_latency_ms`
-- `runtime_latency_ms`
-- `falls`
-- `errors`
-- `metadata`
-
-### 11.4 导出状态 bundle
-
-```bash
-curl -X POST http://127.0.0.1:8080/sessions/<session_id>/export
-```
-
-当前会在 artifact 根目录下生成 `status.json`。
-
-### 11.5 连接 WebSocket
+从系统目标上看，Text2Humanoid 不是“生成一个完整 motion 文件然后播放”的离线工具，而是一个面向在线 demo 的流式 orchestration layer。当前 streaming 已经打通为 research prototype，但 buffer watermark、contract 命名和 retarget chunk 边界仍在收敛中：
 
 ```text
-ws://127.0.0.1:8080/ws/<session_id>
+text prompt / text stream
+  -> motion chunk generation
+  -> chunk-level G1 retargeting
+  -> runtime future buffer
+  -> continuous BFM-Zero frame stream
+  -> MuJoCo G1 motion tracking
 ```
 
-当前连接建立后会先收到一条状态消息。后续 command / reset / stop 操作会收到广播事件。
+当前部分实现仍会通过落盘 artifact 验证中间结果，例如 `motion_263.npz`、`motion_140.npy`、`bfmzero_chunk.npz`。这些离线路径主要用于 debug 和边界验证，不是最终架构目标。
 
-## 12. Artifact 约定
-
-当前 artifact 由 [artifact_store.py](./src/text2humanoid/infra/artifact_store.py) 管理。
-
-目录结构：
+当前推荐入口是本地 Web 控制台：
 
 ```text
-artifacts/
-└── <session_id>/
-    └── status.json
+apps/demo_console_server.py
 ```
-
-当前能力比较基础：
-
-- 保存 JSON
-- 保存 NPZ
-- 导出状态 bundle
-
-建议后续扩展为：
-
-- `commands.jsonl`
-- `human_chunk_*.npz`
-- `nmr_input_*.npz`
-- `reference_chunk_*.npz`
-- `runtime_status.jsonl`
-- `preview.mp4`
-
-## 13. 测试
-
-当前测试位于 [tests](./tests)。
-
-覆盖内容：
-
-- 契约对象
-- `263D -> 140D` 桥接
-- reference adapter
-- reference buffer
-- trajectory source / canonical trajectory
-- 离线 replay bundle
-- file backend / floodnet source
-- planner-native streaming
-- fixed text + fixed trajectory demo smoke
-
-运行命令：
-
-```bash
-PYTHONPATH=src python -m pytest tests/ -q
-```
-
-当前测试通过状态：
-
-- `142 passed`
-
-## 14. 依赖与安装
-
-`Text2Humanoid` 自身在 [pyproject.toml](./pyproject.toml) 中声明的直接依赖较少：
-
-- `fastapi`
-- `uvicorn`
-- `pydantic`
-- `numpy`
-- `PyYAML`
-
-但真正运行时还依赖外部 repo 已经具备可用环境，尤其是：
-
-- `FloodNet` 的模型加载依赖
-- `MakeTrackingEasy` 的推理依赖
-- `motion_tracking` 的配置和未来 runtime 依赖
-
-建议当前阶段的使用方式是：
-
-- 不急着把所有环境重新统一打包
-- 先在你现有的工作环境中运行
-- 等真实 `motion_tracking` source plugin 接上后，再决定最终环境管理策略
-
-## 15. Demo Runbook
-
-### 15.1 默认主线：Socket Bridge（推荐）
-
-- 在线 TCP bridge，Text2Humanoid `SocketBackend` → motion_tracking `SocketFloodNetSource`
-- 不需要文件系统中转
-- 单机单 GPU
-
-**配对配置：**
-- Text2Humanoid 侧：[demo_socket.yaml](./configs/system/demo_socket.yaml) — `runtime.backend: socket`
-- motion_tracking 侧：[tracking_socket_floodnet.yaml](../motion_tracking/sim2real/config/tracking_socket_floodnet.yaml) — `motion_source: socket_floodnet`
-
-**最小启动顺序：**
-
-```bash
-# Terminal 1: 启动 Text2Humanoid API server
-cd /path/to/Text2Humanoid
-PYTHONPATH=src python apps/api_server.py --config configs/system/demo_socket.yaml
-
-# Terminal 2: 创建 session 并推送命令
-curl -X POST http://127.0.0.1:8080/sessions
-# → {"session_id": "abc123..."}
-
-curl -X POST http://127.0.0.1:8080/sessions/abc123/commands \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "walk forward slowly",
-    "trajectory": {
-      "waypoints": [
-        {"t": 0.0, "x": 0.0, "y": 0.0, "z": 0.0},
-        {"t": 5.0, "x": 5.0, "y": 0.0, "z": 0.0}
-      ]
-    }
-  }'
-
-# Terminal 3: 启动 motion_tracking runtime（socket consumer）
-cd /path/to/motion_tracking
-PYTHONPATH=sim2real/src python sim2real/src/deploy.py --sim2sim \
-  --tracking-config config/tracking_socket_floodnet.yaml
-```
-
-### 15.2 Fallback / Debug 路径：File-based
-
-- 写 NPZ 到文件系统 → motion_tracking `FloodNetMotionSource` 轮询消费
-- 适合离线调试、单步验证、不需要在线 bridge 的场景
-
-**配对配置：**
-- Text2Humanoid 侧：[demo_fixed.yaml](./configs/system/demo_fixed.yaml) — `runtime.backend: floodnet_file`
-- motion_tracking 侧：[tracking_floodnet.yaml](../motion_tracking/sim2real/config/tracking_floodnet.yaml) — `motion_source: floodnet`
-
-**最小启动顺序：**
-
-```bash
-# Terminal 1: 启动 Text2Humanoid API server
-cd /path/to/Text2Humanoid
-PYTHONPATH=src python apps/api_server.py --config configs/system/demo_fixed.yaml
-
-# Terminal 2: 创建 session 并推送命令
-curl -X POST http://127.0.0.1:8080/sessions
-# → {"session_id": "abc123..."}
-
-curl -X POST http://127.0.0.1:8080/sessions/abc123/commands \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "walk forward slowly",
-    "trajectory": {
-      "waypoints": [
-        {"t": 0.0, "x": 0.0, "y": 0.0, "z": 0.0},
-        {"t": 5.0, "x": 5.0, "y": 0.0, "z": 0.0}
-      ]
-    }
-  }'
-
-# 启动后台 refill（自动持续补 chunk）
-curl -X POST http://127.0.0.1:8080/sessions/abc123/refill/start
-
-# Terminal 3: 启动 motion_tracking runtime（file consumer）
-cd /path/to/motion_tracking
-uv run src/deploy.py --sim2sim \
-  --tracking-config config/tracking_floodnet.yaml
-```
-
-### 15.3 最小验证步骤
-
-**Socket 主线验证：**
-
-1. 确认 `motion_tracking` 终端日志中出现 `[SocketFloodNetSource] Connected`。
-2. 检查 session 状态：
-   ```bash
-   curl http://127.0.0.1:8080/sessions/abc123/status
-   # → phase: running, buffer_frames > 0
-   ```
-3. 停止 session 后验证状态：
-   ```bash
-   curl -X POST http://127.0.0.1:8080/sessions/abc123/stop
-   ```
-
-**File fallback 验证：**
-
-1. 检查 session 输出目录是否有多个 chunk：
-   ```bash
-   ls artifacts/demo/floodnet_clips/abc123/chunk_*.npz
-   ```
-2. 检查 chunk_index.json：
-   ```bash
-   cat artifacts/demo/floodnet_clips/abc123/chunk_index.json
-   ```
-3. 检查 stream 生命周期：
-   ```bash
-   cat artifacts/demo/floodnet_clips/abc123/stream_status.json
-   # → {"phase": "running"}
-   ```
-4. 停止 session 后验证 `done`：
-   ```bash
-   curl -X POST http://127.0.0.1:8080/sessions/abc123/stop
-   cat artifacts/demo/floodnet_clips/abc123/stream_status.json
-   # → {"phase": "done"}
-   ```
-
-### 15.4 配置说明
-
-**Socket 主线** [demo_socket.yaml](./configs/system/demo_socket.yaml)：
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| `planner.chunk_frames` | 60 | 每次生成 ~3s 动作 |
-| `runtime.backend` | `socket` | TCP 在线发送 |
-| `runtime.socket_port` | 15555 | TCP 监听端口 |
-| `runtime.high_watermark_frames` | 80 | buffer 高水位 |
-
-**File fallback** [demo_fixed.yaml](./configs/system/demo_fixed.yaml)：
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| `planner.chunk_frames` | 60 | 每次生成 ~3s 动作 |
-| `runtime.backend` | `floodnet_file` | 写 NPZ 到文件系统 |
-| `runtime.floodnet_output_dir` | `./artifacts/demo/floodnet_clips` | NPZ 输出目录 |
-| `runtime.low_watermark_frames` | 20 | buffer 低于此触发 refill |
 
 ---
 
-## 16. 已知难点和风险
+## 1. 项目定位
 
-这是后续开发时必须持续记住的风险列表。
+Text2Humanoid 是一个 research demo / orchestration layer。
 
-### 16.1 最大算法风险：`263D -> 140D`
+它负责：
 
-这不是简单字段映射，而是跨动作表示域的桥接。即使代码正确，也可能语义不对、分布不对、效果不稳。
+* 管理 demo session 和运行状态；
+* 接收文本 prompt 或文本更新；
+* 调用 generation backend 生成 263D human motion chunk；
+* 将 263D chunk 转换成 MakeTrackingEasy 需要的 140D chunk；
+* 调用 MakeTrackingEasy retarget 成 Unitree G1 motion chunk；
+* 将 G1 motion chunk 转换成 BFM-Zero `tracking_online` 可消费的 ZMQ frame stream；
+* 维护 runtime future buffer，尽量保证下游连续播放；
+* 启动和控制 MuJoCo simulation / BFM-Zero policy；
+* 保存中间产物、诊断文件和 debug bundle。
 
-### 16.2 `G1ReferenceChunk` 语义必须和 `motion_tracking` 数据集一致
+它不负责：
 
-如果 DOF 顺序、local body 定义、quaternion 顺序、body_names 有任何偏差，tracker 可能“能跑”，但行为会明显劣化。
+* 训练 FloodDiffusion；
+* 训练 FloodNet；
+* 训练 MakeTrackingEasy；
+* 训练 BFM-Zero；
+* 重写机器人控制策略；
+* 做 sim2real；
+* 做生产级实时机器人系统。
 
-### 16.3 在线切换文本 + 轨迹是高风险动作
+当前阶段的目标是：让研究伙伴能够理解并复现完整数据链路，使用 Web Console 跑通流式 demo，并方便后续继续改 generation、retarget、runtime 或 demo orchestration。
 
-即使上游生成正常，hard switch 也容易导致下游 reference 不连续，所以 buffer 的 overlap / cross-fade 很关键。
+---
 
-### 16.4 单机单 GPU 资源争用
+## 2. 当前主线
 
-后续一旦接真 runtime，上游 planner 和下游仿真/推理竞争资源会成为时延尖峰来源。
+当前已经跑通的主线是：
 
-### 16.5 在线 runtime bridge 已接通，socket 已是默认 demo 主线
+```text
+Text prompt
+  -> FloodDiffusion
+  -> HumanML3D / 263D motion chunk
+  -> 263D to 140D bridge
+  -> MakeTrackingEasy
+  -> G1 root + 29 DoF motion chunk
+  -> BFM-Zero future buffer
+  -> BFM-Zero ZMQ frame stream
+  -> BFM-Zero tracking_online
+  -> MuJoCo G1
+```
 
-- 默认 demo 已切换到 socket bridge 主线（`demo_socket.yaml` + `tracking_socket_floodnet.yaml`）
-- file-based 路径（`demo_fixed.yaml` + `tracking_floodnet.yaml`）继续保留为 fallback / debug
-- 两条路径在配置、文档和 smoke 层面已对齐
+当前实现状态：
 
-当前剩余风险不再是“哪条路径是主线”，而是：
+```text
+offline validation:
+  apps/run_text_to_bfmzero.py
+  apps/replay_bfmzero_chunk.py
+  apps/launch_full_demo.py
 
-- TCP socket 桥接在极端网络条件下尚未压测
-- 在线 bridge 的长稳运行尚未经过长时间考验
-- consumer 侧 `timeout / disconnect` 语义已经有最小真实 smoke，但还没有经过更长时间压力验证
+streaming prototype:
+  FloodDiffusionStreamingBackend
+  StreamingTextToBFMZeroRunner
+  StreamingRetargetBridge
+  StreamingBFMZeroPublisher / BFMZeroFrameBuffer
+  Demo Console Start Stream / Update Text / Stop Stream
+```
 
-## 17. 下一步建议
+当前主入口：
 
-当前里程碑：稳定的多次在线 command / trajectory 序列最小语义已闭环，最小平滑 `CROSSFADE` 路径也已经接通。运行中的 session 已能连续接受三条及以上 command，并在 crossfade 路径上暴露最小 overlap 窗口观测。runtime 主线方面，socket bridge 已提升为默认 demo 主线：`demo_socket.yaml` + `tracking_socket_floodnet.yaml`，同时 `demo_fixed.yaml` + `tracking_floodnet.yaml` 保留为 file-based fallback。
+```text
+apps/demo_console_server.py
+```
 
-下一步推荐顺序：
+当前主 runtime：
 
-1. 启动独立的三段式 pipeline integration testing
-2. 先落地 `Stage A: 文本 + 轨迹 -> FloodNet 输出验证`
-3. 保持现有 source contract 和两条 runtime 路径稳定
-4. 再按 `Stage B -> Stage C` 逐段推进
+```text
+BFM-Zero tracking_online + ZMQ
+```
 
-不要在刚完成 socket 主线提升后立刻跳进”大而全”的真实仿真测试。
+历史上保留过 `motion_tracking` socket/file backend 作为 runtime fallback，但当前主线已经切换到 BFM-Zero。`motion_tracking` 相关代码不再作为推荐路径维护。
 
-## 18. 与 `motion_tracking` 的 patch 说明
+未来计划中，FloodNet 会作为新的 generation backend 接入，用来替换当前的 FloodDiffusion backend。只要它继续输出同样语义的 `humanml3d_263` chunk，下游 retarget 和 runtime 不需要重写。
 
-相关文档在：
+---
 
-- [floodnet_source_spec.md](./patches/motion_tracking/floodnet_source_spec.md)
-- [expected_runtime_patch.md](./patches/motion_tracking/expected_runtime_patch.md)
+## 3. 总体数据链路
 
-这两份文档的角色是：
+Text2Humanoid 的目标数据链路按 chunk 流动，而不是按完整 motion 文件流动。当前代码中主要使用 `GeneratedMotion`、`NMRInputChunk`、`RobotMotion` 和 `BFMZeroMotionChunk`；文档里的 `*Chunk` 命名表示后续 contract 收敛方向：
 
-- 明确未来 `motion_tracking` 应该暴露什么 source 接口
-- 约束 `Text2Humanoid` 和 runtime 之间的桥接边界
+```text
+Text Prompt / Text Stream
+  |
+  v
+Demo Console / Session Orchestrator
+  |
+  v
+GenerationBackend.stream_chunks()
+  当前实现: FloodDiffusion / FloodDiffusion streaming wrapper
+  未来实现: FloodNetBackend
+  |
+  v
+GeneratedMotion / GeneratedMotionChunk
+  representation = humanml3d_263
+  motion.shape   = (chunk_T, 263)
+  fps            = 20
+  |
+  v
+HumanML263ToNMR140Bridge.convert_chunk()
+  |
+  v
+NMRInputChunk / RetargetInputChunk
+  representation = nmr_smplx_140
+  motion.shape   = (chunk_T, 140)
+  fps            = 30
+  |
+  v
+MakeTrackingEasyBackend.retarget_chunk()
+  |
+  v
+RobotMotion / RobotMotionChunk
+  robot          = unitree_g1
+  root + 29 DoF
+  root_quat      = wxyz
+  fps            = 30
+  |
+  v
+G1MotionToBFMZeroInputBridge.convert_chunk()
+  |
+  v
+BFMZeroMotionChunk
+  joint_pos / joint_vel
+  root_pos / root_quat
+  root_lin_vel_w / root_ang_vel_w
+  fps            = 50
+  |
+  v
+Runtime Future Buffer
+  |
+  v
+Streaming Publisher / BFMZeroZmqSink
+  |
+  v
+BFM-Zero tracking_online
+  |
+  v
+MuJoCo G1
+```
 
-真正执行时，建议只对 `motion_tracking` 做最小 patch，而不是把它整仓吸收到这里。
+几个关键数据表示：
 
-## 19. 一句话总结
+| 阶段            | 数据对象               | 表示               | shape / 内容            | FPS |
+| --------------- | ---------------------- | ------------------ | ----------------------- | --- |
+| generation 输出 | `GeneratedMotion`      | `humanml3d_263`    | `(chunk_T, 263)`        | 20  |
+| retarget 输入   | `NMRInputChunk`        | `nmr_smplx_140`    | `(chunk_T, 140)`        | 30  |
+| robot motion    | `RobotMotion`          | `g1_root_dof`      | root + 29 DoF           | 30  |
+| BFM-Zero 输入   | `BFMZeroMotionChunk`   | frame stream chunk | root + joint + velocity | 50  |
 
-`Text2Humanoid` 的本质不是第四个模型仓库，而是一个把 `FloodNet`、`MakeTrackingEasy`、`motion_tracking` 三段系统稳定串起来的在线编排层。当前版本已经把多次在线切换、平滑 crossfade、最小在线 runtime bridge、socket 默认 demo 主线，以及 socket 生命周期边界的最小 smoke 跑通了，file-based fallback 路径继续可用。下一步的主战场不再是继续补局部 runtime 细节，而是正式启动分阶段 pipeline integration testing，并先从 Stage A 开始。
+其中：
+
+* `263D` 是 FloodDiffusion / HumanML3D 风格的人体动作表示；
+* `140D` 是 MakeTrackingEasy / NMR retarget model 需要的 SMPL-X motion input；
+* `29 DoF` 是 Unitree G1 的关节自由度；
+* `50 FPS` 是推给 BFM-Zero `tracking_online` 前的 runtime 频率；
+* `chunk` 是 generation、retarget 和 runtime 之间的最小流式处理单元；
+* `future buffer` 是 runtime 侧维护的未来帧缓存，用来减少播放断流。
+
+---
+
+## 4. 如何启动 Demo Console
+
+当前推荐从 Web Demo Console 启动：
+
+```bash
+cd /home/lai/大学/text2motion/Text2Humanoid
+PYTHONPATH=src python3 apps/demo_console_server.py --host 127.0.0.1 --port 8090
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8090/
+```
+
+Demo Console 主要提供两组功能。
+
+Simulation / Policy 控制：
+
+```text
+Start Sim      # 启动 MuJoCo sim 和 BFM-Zero policy
+Put Down       # 发送 sim key 9
+Init Robot     # 发送 policy key i
+Start Motion   # 发送 policy key [
+Enable Policy  # 发送 policy key ]
+Stop App       # 清理 demo 相关进程
+```
+
+Streaming Motion：
+
+```text
+输入 prompt
+Start Stream
+Update Text
+Stop Stream
+查看 streaming metrics
+查看 Live FloodDiffusion 263D Preview
+```
+
+离线验证入口仍保留在 CLI 中：
+
+```bash
+PYTHONPATH=src python3 apps/run_text_to_bfmzero.py \
+  --text "walk forward" \
+  --out-prefix assets/saved/demo_walk \
+  --frames 300 \
+  --generation-steps 150 \
+  --dry-run
+```
+
+如需渲染中间态视频，额外加：
+
+```text
+--inspect
+```
+
+Web streaming 路径对应的是：
+
+```text
+准备 session
+持续生成 263D chunks
+按窗口 retarget chunk
+append 到 BFM-Zero paced frame buffer
+以 50Hz 推送给 BFM-Zero
+```
+
+如果需要清理 demo 相关进程，可以运行：
+
+```bash
+PYTHONPATH=src python3 apps/app_stop.py
+```
+
+---
+
+## 5. 代码结构
+
+仓库一级结构大致如下：
+
+```text
+Text2Humanoid/
+├── apps/        # 稳定运行入口
+├── configs/     # 系统、generation、retarget、runtime 配置
+├── patches/     # 外部项目 patch / spec 说明
+├── src/         # 核心源码
+├── tests/       # 测试
+├── tools/       # 诊断、可视化、replay 工具
+├── README.md
+└── pyproject.toml
+```
+
+`src/text2humanoid/` 是核心代码：
+
+```text
+src/text2humanoid/
+├── contracts/      # 跨模块数据契约
+├── generation/     # 文本到 263D motion chunk
+├── retarget/       # 263D -> 140D -> G1 retarget
+├── runtime/        # BFM-Zero 协议、future buffer、ZMQ 推流
+├── orchestrator/   # pipeline / session / chunk 调度
+├── demo/           # Web console 和进程管理
+├── infra/          # 路径、配置、日志、artifact、进程管理
+├── api/            # HTTP / WebSocket API
+├── visualization/  # 可视化辅助
+└── interfaces.py   # backend / bridge / sink 协议接口
+```
+
+建议理解方式：
+
+```text
+contracts     定义跨模块传输什么
+generation    负责从文本生成 263D motion chunk
+retarget      负责从 263D chunk 得到 G1 motion chunk
+runtime       负责把 G1 motion chunk 连续推给 BFM-Zero
+orchestrator  负责 session 和 chunk pipeline 调度
+demo          负责本地控制台和进程管理
+```
+
+---
+
+## 6. 流式链路与 Buffer 设计
+
+Text2Humanoid 的核心不是离线生成一个完整 motion 文件后播放，而是维护一个 session 级的 streaming chunk pipeline。
+
+系统可以理解成多个异步生产者 / 消费者之间的 buffer 链路：
+
+```text
+Text / Prompt Updates
+        |
+        v
+Session Orchestrator
+        |
+        v
+Generation Request Queue
+        |
+        v
+263D Motion Buffer
+        |
+        v
+Retarget Queue
+        |
+        v
+G1 Motion Buffer
+        |
+        v
+Runtime Future Buffer
+        |
+        v
+BFM-Zero ZMQ Sender at 50Hz
+        |
+        v
+BFM-Zero tracking_online -> MuJoCo G1
+```
+
+其中最重要的问题是：上游生成模型输出 20 FPS motion，而下游 BFM-Zero tracking 控制按 50 FPS 消费 reference frame。二者不是通过固定帧数直接对齐，而是通过相同时间长度的 chunk 对齐。
+
+### 6.1 核心问题：20 FPS 生成如何接 50 FPS tracking
+
+系统中不同阶段使用不同 FPS：
+
+```text
+FloodDiffusion / generation: 20 FPS
+MakeTrackingEasy retarget:   30 FPS
+BFM-Zero tracking_online:    50 FPS
+```
+
+这并不表示 BFM-Zero 直接消费 20 FPS 的 generation 输出。实际链路是：
+
+```text
+GeneratedMotionChunk
+  20 FPS, humanml3d_263
+  duration = D seconds
+        |
+        | resample / convert by time
+        v
+RetargetInputChunk
+  30 FPS, nmr_smplx_140
+  duration = D seconds
+        |
+        | MakeTrackingEasy retarget
+        v
+RobotMotionChunk
+  30 FPS, G1 root + dof
+  duration = D seconds
+        |
+        | resample by time
+        v
+BFMZeroMotionChunk
+  50 FPS, root + dof + velocities
+  duration = D seconds
+        |
+        | send one frame every 1/50 second
+        v
+BFM-Zero tracking_online
+```
+
+也就是说：
+
+```text
+20 FPS generation 只决定上游动作采样率
+30 FPS retarget 是 MakeTrackingEasy 的输入 / 输出工作频率
+50 FPS runtime 是 BFM-Zero 的发送和控制频率
+```
+
+中间通过时间轴重采样对齐。
+
+### 6.2 用时间长度定义 chunk，而不是用固定帧数
+
+README 和代码设计中不建议只说 chunk_size = 20，因为“20 帧”在哪个 FPS 下含义不同。
+
+更推荐使用：
+
+```text
+chunk_duration_sec = 1.0
+generation_fps = 20
+retarget_fps = 30
+runtime_fps = 50
+```
+
+然后各阶段帧数由时间长度派生：
+
+```text
+generation_frames = chunk_duration_sec * 20
+retarget_frames   = chunk_duration_sec * 30
+runtime_frames    = chunk_duration_sec * 50
+```
+
+例如，当 chunk_duration_sec = 1.0 时：
+
+```text
+GeneratedMotionChunk: 20 frames @ 20 FPS
+RetargetInputChunk:  30 frames @ 30 FPS
+RobotMotionChunk:    30 frames @ 30 FPS
+BFMZeroMotionChunk:  50 frames @ 50 FPS
+```
+
+它们帧数不同，但都表示同一段 1 秒的动作。
+
+如果 chunk_duration_sec = 2.0：
+
+```text
+GeneratedMotionChunk: 40 frames @ 20 FPS
+RetargetInputChunk:  60 frames @ 30 FPS
+BFMZeroMotionChunk:  100 frames @ 50 FPS
+```
+
+因此，系统真正对齐的是时间，不是原始帧数。
+
+### 6.3 单个 chunk 的数据流
+
+以 chunk_duration_sec = 1.0 为例，一个 chunk 在系统中的流动如下：
+
+```text
+[Generation Request]
+  prompt = "walk forward"
+  duration = 1.0s
+        |
+        v
+[GeneratedMotionChunk]
+  representation = humanml3d_263
+  shape = (20, 263)
+  fps = 20
+  duration = 1.0s
+        |
+        v
+[RetargetInputChunk]
+  representation = nmr_smplx_140
+  shape = (30, 140)
+  fps = 30
+  duration = 1.0s
+        |
+        v
+[RobotMotionChunk]
+  robot = unitree_g1
+  root_pos = (30, 3)
+  root_quat = (30, 4)
+  dof_pos = (30, 29)
+  fps = 30
+  duration = 1.0s
+        |
+        v
+[BFMZeroMotionChunk]
+  joint_pos = (50, 29)
+  joint_vel = (50, 29)
+  root_pos = (50, 3)
+  root_quat = (50, 4)
+  root_lin_vel_w = (50, 3)
+  root_ang_vel_w = (50, 3)
+  fps = 50
+  duration = 1.0s
+        |
+        v
+[Runtime Future Buffer]
+  append 50 frames
+        |
+        v
+[BFM-Zero Sender]
+  send 1 frame every 20 ms
+```
+
+在这个过程中，generation / retarget / runtime 各层只关心自己的输入输出契约。
+
+generation 不需要知道 BFM-Zero 的 joint order；retarget 不需要知道 ZMQ 发送频率；runtime 不需要知道文本 prompt 如何被编码。
+
+### 6.4 连续播放时的 future buffer
+
+如果每次都等一个 chunk 播放完，再生成下一个 chunk，系统很容易断流。
+
+例如：
+
+```text
+chunk_duration = 1.0s
+generation + retarget 耗时 = 3.0s
+BFM-Zero 1.0s 就播完当前 chunk
+后面 2.0s 没有 reference frame
+```
+
+因此，真正的 streaming 设计不是：
+
+```text
+generate chunk
+-> retarget chunk
+-> play chunk
+-> generate next chunk
+```
+
+而应该是：
+
+```text
+runtime 播放当前 future buffer
+同时 generation / retarget 准备后续 chunk
+当 buffer 低于阈值时提前请求 next chunk
+新 chunk 完成后 append 到 future buffer
+```
+
+runtime future buffer 可以理解成：
+
+```text
+已准备但尚未播放的 BFM-Zero frames
+```
+
+例如：
+
+```text
+t = 0.0s:
+  buffer = 100 frames  # 2 秒 future motion
+
+t = 0.5s:
+  BFM-Zero 已消费 25 frames
+  buffer = 75 frames
+
+如果 low_watermark = 50 frames:
+  orchestrator 触发 generation / retarget 下一个 chunk
+
+新 chunk 完成:
+  append 50 frames
+  buffer 回到约 100 frames
+```
+
+BFM-Zero sender 始终以 50Hz 消费：
+
+```text
+1 frame / 20 ms
+50 frames / second
+```
+
+上游模块只需要在 buffer 被耗尽之前补上新的 future frames。
+
+### 6.5 Generation Buffer
+
+generation 层是 263D motion chunk 的生产者。
+
+输入：
+
+```text
+PromptCommand / GenerateRequest
+```
+
+输出：
+
+```text
+GeneratedMotionChunk
+  representation = humanml3d_263
+  motion.shape = (chunk_T, 263)
+  fps = 20
+  chunk_id
+  start_time
+  prompt_id
+```
+
+generation buffer 可以理解成：
+
+```text
+Prompt / text update
+  -> generation request queue
+  -> generated 263D chunk queue
+```
+
+它解决的问题是：
+
+generation 可能比 playback 慢；
+同一个 prompt 可能需要连续生成多个 chunk；
+新 prompt 可能在旧 prompt 的 chunk 还没播放完时到来；
+生成失败时需要让 session fallback / stop，而不是让 runtime 直接崩掉。
+
+当前实现中，generate_chunk() 可以作为单 chunk 生成能力；stream_chunks() 是目标接口，用于连续产出 GeneratedMotionChunk。
+
+离线保存 motion_263.npz 只是验证方式。真正稳定的接口是：
+
+GenerationBackend.stream_chunks(request)
+  -> Iterator[GeneratedMotionChunk]
+
+generation 侧 buffer 不关心 BFM-Zero 的 50Hz，也不关心 G1 joint order。它只保证产出语义正确、时间戳连续的 263D chunk。
+
+### 6.6 Retarget Buffer
+
+retarget 层是 263D chunk 的消费者，也是 G1 motion chunk 的生产者。
+
+输入队列：
+
+```text
+GeneratedMotionChunk queue
+```
+
+输出队列：
+
+```text
+RobotMotionChunk / BFMZeroMotionChunk queue
+```
+
+retarget buffer 的链路是：
+
+```text
+GeneratedMotionChunk(20 FPS, 263D)
+  -> 263D to 140D bridge
+  -> RetargetInputChunk(30 FPS, 140D)
+  -> MakeTrackingEasy retarget
+  -> RobotMotionChunk(30 FPS, root + 29 DoF)
+```
+
+retarget buffer 需要处理的问题：
+
+20 FPS 到 30 FPS 的 chunk 重采样；
+chunk start_time / duration 对齐；
+root position 在 chunk 间连续；
+root orientation 在 chunk 间连续；
+MakeTrackingEasy 是否需要上下文窗口；
+预测结果在 chunk 边界是否跳变；
+retarget 耗时是否会导致 runtime buffer 低水位。
+
+因此 retarget 层通常不应该只处理完全孤立的 chunk，而应该保留必要的历史上下文，例如：
+
+```text
+previous chunk tail
+previous root pose
+previous root yaw
+previous dof tail
+```
+
+这些状态用于：
+
+velocity 计算；
+chunk 边界连续性检查；
+overlap / crossfade；
+root trajectory 对齐；
+retarget 输出 sanity check。
+
+retarget buffer 不负责最终按 50Hz 发送。它输出的是 G1 motion 语义正确的 robot chunk。
+
+### 6.7 Runtime Future Buffer
+
+runtime 层是固定频率消费者。BFM-Zero tracking_online 需要持续接收 frame stream，因此 runtime 不能等待上游临时生成。
+
+runtime 的核心结构是 future buffer：
+
+```text
+RobotMotionChunk / BFMZeroMotionChunk
+  -> append to future buffer
+  -> 50Hz playhead consumes frames
+  -> BFMZeroZmqSink sends MotionFrameMessage
+```
+
+future buffer 维护：
+
+```text
+frame_start
+frame_idx
+playhead
+buffered_frames
+buffered_seconds
+low_watermark
+end_flag
+```
+
+BFM-Zero 每帧需要：
+
+```text
+frame_idx
+joint_pos
+joint_vel
+root_pos
+root_quat
+root_lin_vel_w
+root_ang_vel_w
+```
+flags
+
+因此进入 future buffer 前，需要完成：
+
+G1 motion 重采样到 50 FPS；
+joint order 转成 BFM-Zero / Isaac order；
+root quaternion 转成 wxyz；
+在 50 FPS 轨迹上重新计算 joint_vel；
+在 50 FPS 轨迹上重新计算 root_lin_vel_w；
+用 quaternion 差分计算 root_ang_vel_w；
+生成连续 frame_idx。
+
+future buffer 的目标是：
+
+BFM-Zero 以固定频率消费；
+上游 generation / retarget 可以异步补充；
+如果 buffer 低于阈值，orchestrator 触发下一 chunk；
+如果 buffer 空了，系统应该进入明确的 fallback / stop 状态，而不是发送脏数据。
+### 6.8 Chunk 边界与连续性
+
+流式系统中，单个 chunk 看起来正常，不代表连续播放正常。
+
+需要重点检查：
+
+time continuity:
+  chunk[i].start_time + chunk[i].duration ~= chunk[i+1].start_time
+
+root continuity:
+  root_pos tail/head 是否连续
+  root_yaw tail/head 是否跳变
+  root_quat consecutive dot 是否接近 1
+
+joint continuity:
+  dof tail/head 是否跳变
+  joint_vel 是否在边界出现尖峰
+
+frame continuity:
+  BFM-Zero frame_idx 是否连续
+  50Hz 重采样后是否丢帧或重复帧
+
+buffer continuity:
+  future buffer 是否 underrun
+  append chunk 时是否覆盖尚未播放的 frame
+
+后续如果需要改善 chunk 边界，可以考虑：
+
+overlap；
+crossfade；
+保留上一 chunk tail 作为上下文；
+root trajectory 对齐；
+yaw smoothing；
+delayed replace。
+### 6.9 文本切换时的 buffer 策略
+
+文本切换不是立即替换当前播放帧，而应该通过 buffer 策略处理。
+
+推荐语义：
+
+current_prompt: 正在播放 / 已生成 future chunk 的文本
+pending_prompt: 用户新提交但尚未生效的文本
+switch_boundary: 允许切换的 chunk 边界
+
+基础策略：
+
+1. 当前 frame 正在由 BFM-Zero 消费，不能直接替换
+2. 已经进入安全播放窗口的 buffer 不修改
+3. 新 prompt 先进入 pending_prompt
+4. orchestrator 在下一个允许的 chunk boundary 使用新 prompt 请求 generation
+5. 新 chunk retarget 完成后 append 到 future buffer
+6. 必要时做 crossfade / delayed replace
+
+第一版可以只支持 chunk boundary 切换，不承诺无缝。
+
+### 6.10 离线 artifact 在流式链路中的角色
+
+虽然系统目标是 streaming，但当前工程中仍会保存中间 artifact：
+
+motion_263.npz
+motion_140.npy
+mte_result.npz
+bfmzero_chunk.npz
+diagnostics.json
+inspect videos
+
+这些文件的作用是：
+
+验证某个边界的数据是否正确；
+重放某个 chunk；
+对比不同 retarget 策略；
+复现实验中的异常；
+避免每次调试都重新跑重模型。
+
+因此 README 中出现 artifact，并不表示系统目标是离线 pipeline。它们是 streaming pipeline 的 debug checkpoint。
+
+
+## 7. 后续计划
+
+短期：
+
+* 清理 `apps/` 和 `tools/` 边界；
+* 将稳定入口和开发工具分开；
+* 整理 `artifacts/`、`assets/saved/`、`assets/video/` 输出目录；
+* 增强 artifact metadata；
+* 增加 BFM-Zero ZMQ mock subscriber test；
+* 增加 RobotMotionChunk / BFMZeroMotionChunk contract test；
+* 明确 chunk id、start time、frame index 的连续性约束。
+
+中期：
+
+* 把 FloodNet 接成新的 `GenerationBackend`；
+* 保持 `GeneratedMotionChunk(humanml3d_263)` 作为下游稳定边界；
+* 改进 chunk 级 streaming；
+* 支持 chunk boundary 文本切换；
+* 强化 retarget 诊断和 root orientation 质量控制；
+* 完善 future buffer low-watermark 调度。
+
+长期：
+
+* 支持更稳定的在线生成；
+* 支持更自然的文本切换；
+* 支持 trajectory / waypoint 条件；
+* 支持更干净的远程 generation backend；
+* 为 sim2real 做更严格的数据契约和 runtime 检查。
