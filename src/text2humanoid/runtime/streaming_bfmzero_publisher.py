@@ -155,6 +155,9 @@ class StreamingBFMZeroPublisher:
     def buffer_status(self) -> FutureBufferStatus:
         return self._buffer.status()
 
+    def needs_refill(self) -> bool:
+        return self._buffer.needs_refill()
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return

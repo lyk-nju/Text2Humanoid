@@ -240,6 +240,17 @@ class StreamingTextToBFMZeroRunner:
         except (TypeError, ValueError):
             return 0
 
+    def _publisher_needs_refill(self) -> bool:
+        needs_refill = getattr(self.publisher, "needs_refill", None)
+        if callable(needs_refill):
+            try:
+                return bool(needs_refill())
+            except Exception:
+                return False
+        status = getattr(self.publisher, "buffer_status", None)
+        phase = getattr(status, "phase", "")
+        return phase in ("underrun", "low")
+
     def __call__(
         self,
         request: StreamJobRequest,
@@ -311,7 +322,7 @@ class StreamingTextToBFMZeroRunner:
                         "buffer_frames": self._publisher_queued_frames(),
                     },
                 )
-                if pending_frames < min_retarget_frames:
+                if pending_frames < min_retarget_frames and not self._publisher_needs_refill():
                     continue
 
                 motion_to_retarget = _coalesce_generated_motions(pending)
