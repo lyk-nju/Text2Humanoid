@@ -94,7 +94,7 @@ Text prompt
 ```text
 offline validation:
   apps/run_text_to_bfmzero.py
-  apps/replay_bfmzero_chunk.py
+  tools/replay/replay_bfmzero_chunk.py
   apps/launch_full_demo.py
 
 streaming prototype:

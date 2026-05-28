@@ -13,6 +13,8 @@ _DEMO_COMMAND_MARKERS = (
     "apps/launch_full_demo.py",
     "apps/replay_bfmzero_chunk.py",
     "apps/run_text_to_bfmzero.py",
+    "tools/replay/replay_bfmzero_chunk.py",
+    "tools/conversion/retarget_to_bfmzero.py",
     "rl_policy/bfm_zero.py",
     "sim_env.base_sim",
     "generate_ldf.py",

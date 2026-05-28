@@ -17,12 +17,10 @@ from text2humanoid.generation import FloodDiffusionBackend
 _TEXT2HUMANOID_DIR = Path(__file__).resolve().parents[1]
 _TEXT2MOTION_ROOT = _TEXT2HUMANOID_DIR.parent
 
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
 if str(_TEXT2HUMANOID_DIR) not in sys.path:
     sys.path.insert(0, str(_TEXT2HUMANOID_DIR))
 
-from retarget_to_bfmzero import main as retarget_to_bfmzero_main
+from tools.conversion.retarget_to_bfmzero import main as retarget_to_bfmzero_main
 
 
 def visualize_263d_main(argv: Sequence[str] | None = None) -> int:

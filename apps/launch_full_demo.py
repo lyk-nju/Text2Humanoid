@@ -14,11 +14,11 @@ _TEXT2MOTION_ROOT = _TEXT2HUMANOID_DIR.parent
 _BFM_ZERO_DIR = _TEXT2MOTION_ROOT / "BFM-Zero"
 _DEFAULT_PYTHON = "/home/lai/anaconda3/envs/flooddiffusion/bin/python"
 
-if str(Path(__file__).resolve().parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+if str(_TEXT2HUMANOID_DIR) not in sys.path:
+    sys.path.insert(0, str(_TEXT2HUMANOID_DIR))
 
-from replay_bfmzero_chunk import main as replay_bfmzero_chunk_main
 from run_text_to_bfmzero import main as run_text_to_bfmzero_main
+from tools.replay.replay_bfmzero_chunk import main as replay_bfmzero_chunk_main
 
 
 class _ManagedProcess:

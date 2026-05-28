@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import argparse
-import numpy as np
+from pathlib import Path
+import sys
 
+_TEXT2HUMANOID_DIR = Path(__file__).resolve().parents[1]
+if str(_TEXT2HUMANOID_DIR) not in sys.path:
+    sys.path.insert(0, str(_TEXT2HUMANOID_DIR))
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect a saved reference clip.")
-    parser.add_argument("path", type=str)
-    args = parser.parse_args()
-
-    data = np.load(args.path, allow_pickle=True)
-    for key in sorted(data.files):
-        print(f"{key}: {data[key].shape}")
+from tools.replay.replay_reference import *  # noqa: F401,F403
+from tools.replay.replay_reference import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

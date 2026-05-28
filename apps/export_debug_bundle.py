@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
+import sys
 
-from text2humanoid.infra.artifact_store import ArtifactStore
+_TEXT2HUMANOID_DIR = Path(__file__).resolve().parents[1]
+if str(_TEXT2HUMANOID_DIR) not in sys.path:
+    sys.path.insert(0, str(_TEXT2HUMANOID_DIR))
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Create a status artifact bundle.")
-    parser.add_argument("--root", default="./artifacts")
-    parser.add_argument("--session-id", required=True)
-    args = parser.parse_args()
-
-    store = ArtifactStore(Path(args.root))
-    print(store.session_dir(args.session_id))
+from tools.diagnostics.export_debug_bundle import *  # noqa: F401,F403
+from tools.diagnostics.export_debug_bundle import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
