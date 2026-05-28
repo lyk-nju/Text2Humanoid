@@ -7,6 +7,7 @@ import yaml
 
 from text2humanoid.infra.artifact_store import ArtifactStore
 from text2humanoid.infra.paths import get_root, set_root
+from text2humanoid.infra.streaming_config import load_streaming_timing_config
 from text2humanoid.orchestrator.pipeline_coordinator import PipelineCoordinator
 from text2humanoid.orchestrator.session_manager import SessionManager
 from text2humanoid.planner.floodnet_service import FloodNetPlannerService
@@ -48,6 +49,8 @@ def resolve_path(root: Path, value: str) -> Path:
 
 def build_components(cfg: dict):
     root = resolve_root_path(cfg)
+    streaming_timing = load_streaming_timing_config(cfg)
+    has_streaming_cfg = bool(cfg.get("streaming"))
 
     artifacts_root = str(resolve_path(root, cfg["artifacts_root"]))
     artifact_store = ArtifactStore(artifacts_root)
@@ -56,13 +59,21 @@ def build_components(cfg: dict):
     planner_config = str(resolve_path(root, planner_cfg["config_path"]))
     planner = FloodNetPlannerService(
         config_path=planner_config,
-        chunk_frames=planner_cfg.get("chunk_frames", 40),
+        chunk_frames=(
+            streaming_timing.generation_chunk_frames
+            if has_streaming_cfg
+            else planner_cfg.get("chunk_frames", 40)
+        ),
     )
 
     retarget_cfg = cfg.get("retarget", {})
     retarget = NMRRetargetService(
         apply_filter=retarget_cfg.get("apply_filter", True),
-        tgt_fps=int(retarget_cfg.get("tgt_fps", 30)),
+        tgt_fps=(
+            int(round(streaming_timing.retarget_fps))
+            if has_streaming_cfg
+            else int(retarget_cfg.get("tgt_fps", 30))
+        ),
     )
 
     runtime_cfg = cfg.get("runtime", {})
@@ -87,25 +98,45 @@ def build_components(cfg: dict):
         )
         backend = FloodNetFileBackend(
             output_dir=floodnet_output_dir,
-            control_hz=int(runtime_cfg.get("control_hz", 50)),
+            control_hz=(
+                int(round(streaming_timing.runtime_fps))
+                if has_streaming_cfg
+                else int(runtime_cfg.get("control_hz", 50))
+            ),
         )
         runtime = MotionTrackingClient(backend=backend)
     elif backend_name == "socket":
         backend = SocketBackend(
             host=str(runtime_cfg.get("socket_host", "127.0.0.1")),
             port=int(runtime_cfg.get("socket_port", 15555)),
-            control_hz=int(runtime_cfg.get("control_hz", 50)),
+            control_hz=(
+                int(round(streaming_timing.runtime_fps))
+                if has_streaming_cfg
+                else int(runtime_cfg.get("control_hz", 50))
+            ),
         )
         runtime = MotionTrackingClient(backend=backend)
     else:
         runtime = MotionTrackingClient(
-            control_hz=int(runtime_cfg.get("control_hz", 50)),
+            control_hz=(
+                int(round(streaming_timing.runtime_fps))
+                if has_streaming_cfg
+                else int(runtime_cfg.get("control_hz", 50))
+            ),
             future_horizon_frames=int(runtime_cfg.get("future_horizon_frames", 16)),
             xml_path=adapter_xml_path,
         )
     fallback = FallbackPolicy(
-        low_watermark_frames=int(runtime_cfg.get("low_watermark_frames", 20)),
-        high_watermark_frames=int(runtime_cfg.get("high_watermark_frames", 60)),
+        low_watermark_frames=(
+            streaming_timing.low_watermark_frames
+            if has_streaming_cfg
+            else int(runtime_cfg.get("low_watermark_frames", 20))
+        ),
+        high_watermark_frames=(
+            streaming_timing.target_buffer_frames
+            if has_streaming_cfg
+            else int(runtime_cfg.get("high_watermark_frames", 60))
+        ),
     )
     coordinator = PipelineCoordinator(
         planner=planner,
@@ -113,6 +144,7 @@ def build_components(cfg: dict):
         adapter=adapter,
         runtime=runtime,
         fallback=fallback,
+        streaming_timing=streaming_timing,
     )
     session_manager = SessionManager(coordinator=coordinator)
     return session_manager, artifact_store

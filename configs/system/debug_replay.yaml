@@ -6,6 +6,13 @@ planner:
   config_path: "FloodNet/configs/ldf_generate.yaml"
   chunk_frames: 20
   warmup_text: "stand still"
+streaming:
+  chunk_duration_sec: 1.0
+  generation_fps: 20
+  retarget_fps: 30
+  runtime_fps: 50
+  low_watermark_sec: 0.16
+  target_buffer_sec: 0.4
 retarget:
   apply_filter: false
   tgt_fps: 30

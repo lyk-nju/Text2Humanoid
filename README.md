@@ -417,11 +417,14 @@ README 和代码设计中不建议只说 chunk_size = 20，因为“20 帧”在
 
 更推荐使用：
 
-```text
-chunk_duration_sec = 1.0
-generation_fps = 20
-retarget_fps = 30
-runtime_fps = 50
+```yaml
+streaming:
+  chunk_duration_sec: 1.0
+  generation_fps: 20
+  retarget_fps: 30
+  runtime_fps: 50
+  low_watermark_sec: 1.0
+  target_buffer_sec: 2.0
 ```
 
 然后各阶段帧数由时间长度派生：
@@ -452,6 +455,10 @@ BFMZeroMotionChunk:  100 frames @ 50 FPS
 ```
 
 因此，系统真正对齐的是时间，不是原始帧数。
+
+当前 `configs/system/*.yaml` 已包含 `streaming` 配置段。为保持现有 demo 可运行性，这些值按原来的
+`planner.chunk_frames`、`runtime.low_watermark_frames` 和 `runtime.high_watermark_frames`
+等价换算；如果配置中没有 `streaming` 段，代码仍会从旧字段派生同样的 timing 语义。
 
 ### 6.3 单个 chunk 的数据流
 

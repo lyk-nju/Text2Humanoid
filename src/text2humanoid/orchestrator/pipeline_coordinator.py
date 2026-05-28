@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import time
 
 from text2humanoid.contracts.commands import PromptCommand
+from text2humanoid.infra.streaming_config import StreamingTimingConfig
 from text2humanoid.contracts.status import RuntimeStatus, SessionPhase
 from text2humanoid.planner.floodnet_service import FloodNetPlannerService
 from text2humanoid.retarget.bridge_263_to_140 import human_chunk_to_nmr_input
@@ -20,6 +21,7 @@ class PipelineCoordinator:
     adapter: G1ReferenceAdapter
     runtime: MotionTrackingClient
     fallback: FallbackPolicy
+    streaming_timing: StreamingTimingConfig | None = None
 
     def warmup(self, session_id: str, text: str) -> RuntimeStatus:
         t0 = time.perf_counter()
