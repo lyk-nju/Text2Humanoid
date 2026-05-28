@@ -5,6 +5,8 @@ from typing import Any
 
 import numpy as np
 
+from text2humanoid.contracts.validation import base_chunk_metadata, validate_fps
+
 
 @dataclass(slots=True)
 class G1ReferenceChunk:
@@ -26,6 +28,7 @@ class G1ReferenceChunk:
         self.dof_pos = np.asarray(self.dof_pos, dtype=np.float32)
         self.local_body_pos = np.asarray(self.local_body_pos, dtype=np.float32)
         self.local_body_rot = np.asarray(self.local_body_rot, dtype=np.float32)
+        self.fps = validate_fps(self.fps)
 
         n = self.root_pos.shape[0]
         if self.root_pos.shape != (n, 3):
@@ -44,6 +47,8 @@ class G1ReferenceChunk:
             raise ValueError("local_body_rot must store quaternions in xyzw")
         if self.local_body_pos.shape[2] != 3:
             raise ValueError("local_body_pos must store xyz coordinates")
+        if len(self.body_names) != self.local_body_pos.shape[1]:
+            raise ValueError("body_names length must match local_body_pos body dimension")
 
     @property
     def num_frames(self) -> int:
@@ -52,3 +57,22 @@ class G1ReferenceChunk:
     @property
     def end_time(self) -> float:
         return self.start_time + self.num_frames / float(self.fps)
+
+    @property
+    def duration_sec(self) -> float:
+        return self.num_frames / float(self.fps)
+
+    def to_chunk_metadata(self) -> dict[str, Any]:
+        data = base_chunk_metadata(
+            chunk_id=self.chunk_id,
+            representation="g1_reference",
+            fps=self.fps,
+            frame_count=self.num_frames,
+            start_time=self.start_time,
+            shape=self.dof_pos.shape,
+            joint_order=",".join(self.joint_names),
+            quat_order=str(self.metadata.get("root_quat_order", "xyzw")),
+        )
+        data["body_count"] = len(self.body_names)
+        data.update(self.metadata)
+        return data

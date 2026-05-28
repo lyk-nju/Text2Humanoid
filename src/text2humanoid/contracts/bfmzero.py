@@ -5,6 +5,8 @@ from typing import Any
 
 import numpy as np
 
+from text2humanoid.contracts.validation import base_chunk_metadata, validate_fps
+
 
 G1_ISAAC_JOINT_NAMES = [
     "left_hip_pitch_joint",
@@ -88,7 +90,7 @@ class BFMZeroMotionChunk:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.fps = int(self.fps)
+        self.fps = validate_fps(self.fps)
         self.frame_start = int(self.frame_start)
         self.joint_pos = np.asarray(self.joint_pos, dtype=np.float32)
         self.joint_vel = np.asarray(self.joint_vel, dtype=np.float32)
@@ -117,9 +119,6 @@ class BFMZeroMotionChunk:
         for key, shape in expected.items():
             if actual[key] != shape:
                 raise ValueError(f"{key} must have shape {shape}, got {actual[key]}")
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
-
         norm = np.linalg.norm(self.root_quat, axis=1, keepdims=True)
         if np.any(norm < 1e-8):
             raise ValueError("root_quat contains zero-norm quaternion")
@@ -132,6 +131,25 @@ class BFMZeroMotionChunk:
     @property
     def frame_end(self) -> int:
         return self.frame_start + self.num_frames
+
+    @property
+    def duration_sec(self) -> float:
+        return self.num_frames / float(self.fps)
+
+    def to_chunk_metadata(self) -> dict[str, Any]:
+        data = base_chunk_metadata(
+            chunk_id=self.chunk_id,
+            representation="bfmzero_motion_frame_stream",
+            fps=self.fps,
+            frame_count=self.num_frames,
+            shape=self.joint_pos.shape,
+            joint_order=str(self.metadata.get("runtime_joint_order", "isaac")),
+            quat_order=str(self.metadata.get("root_quat_order", "wxyz")),
+        )
+        data["frame_start"] = self.frame_start
+        data["frame_end"] = self.frame_end
+        data.update(self.metadata)
+        return data
 
 
 def bfmzero_motion_from_bmimic_data(

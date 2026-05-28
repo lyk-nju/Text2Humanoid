@@ -6,6 +6,14 @@ import uuid
 
 import numpy as np
 
+from text2humanoid.contracts.validation import (
+    as_float32_matrix,
+    base_chunk_metadata,
+    validate_fps,
+    validate_known_representation_shape,
+    validate_quat_order,
+)
+
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
@@ -147,12 +155,9 @@ class GeneratedMotion:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.motion = np.asarray(self.motion, dtype=np.float32)
-        if self.motion.ndim != 2:
-            raise ValueError(f"motion must have shape (T, D), got {self.motion.shape}")
-        self.fps = int(self.fps)
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
+        self.motion = as_float32_matrix(self.motion, field_name="motion")
+        validate_known_representation_shape(self.representation, self.motion.shape)
+        self.fps = validate_fps(self.fps)
 
     @property
     def num_frames(self) -> int:
@@ -166,6 +171,26 @@ class GeneratedMotion:
     def end_time(self) -> float:
         return self.start_time + self.num_frames / float(self.fps)
 
+    @property
+    def duration_sec(self) -> float:
+        return self.num_frames / float(self.fps)
+
+    @property
+    def motion_shape(self) -> tuple[int, int]:
+        return tuple(int(x) for x in self.motion.shape)
+
+    def to_chunk_metadata(self) -> dict[str, Any]:
+        data = base_chunk_metadata(
+            chunk_id=self.motion_id,
+            representation=self.representation,
+            fps=self.fps,
+            frame_count=self.num_frames,
+            start_time=self.start_time,
+            shape=self.motion.shape,
+        )
+        data.update(self.metadata)
+        return data
+
 
 @dataclass(slots=True)
 class RetargetInput:
@@ -178,16 +203,34 @@ class RetargetInput:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.motion = np.asarray(self.motion, dtype=np.float32)
-        if self.motion.ndim != 2:
-            raise ValueError(f"motion must have shape (T, D), got {self.motion.shape}")
-        self.fps = int(self.fps)
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
+        self.motion = as_float32_matrix(self.motion, field_name="motion")
+        validate_known_representation_shape(self.representation, self.motion.shape)
+        self.fps = validate_fps(self.fps)
 
     @property
     def num_frames(self) -> int:
         return int(self.motion.shape[0])
+
+    @property
+    def duration_sec(self) -> float:
+        return self.num_frames / float(self.fps)
+
+    @property
+    def motion_shape(self) -> tuple[int, int]:
+        return tuple(int(x) for x in self.motion.shape)
+
+    def to_chunk_metadata(self) -> dict[str, Any]:
+        data = base_chunk_metadata(
+            chunk_id=self.input_id,
+            representation=self.representation,
+            fps=self.fps,
+            frame_count=self.num_frames,
+            start_time=self.start_time,
+            shape=self.motion.shape,
+            source_chunk_id=self.source_motion_id,
+        )
+        data.update(self.metadata)
+        return data
 
 
 @dataclass(slots=True)
@@ -217,15 +260,39 @@ class RobotMotion:
             raise ValueError(f"root_quat must have shape {(n, 4)}, got {self.root_quat.shape}")
         if len(self.joint_names) != self.dof_pos.shape[1]:
             raise ValueError("joint_names length must match dof_pos dimension")
-        if self.quat_order not in ("wxyz", "xyzw"):
-            raise ValueError("quat_order must be 'wxyz' or 'xyzw'")
-        self.fps = int(self.fps)
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
+        self.quat_order = validate_quat_order(self.quat_order)
+        self.fps = validate_fps(self.fps)
 
     @property
     def num_frames(self) -> int:
         return int(self.dof_pos.shape[0])
+
+    @property
+    def duration_sec(self) -> float:
+        return self.num_frames / float(self.fps)
+
+    @property
+    def motion_shape(self) -> dict[str, tuple[int, ...]]:
+        return {
+            "root_pos": tuple(int(x) for x in self.root_pos.shape),
+            "root_quat": tuple(int(x) for x in self.root_quat.shape),
+            "dof_pos": tuple(int(x) for x in self.dof_pos.shape),
+        }
+
+    def to_chunk_metadata(self) -> dict[str, Any]:
+        data = base_chunk_metadata(
+            chunk_id=self.motion_id,
+            representation=self.representation,
+            fps=self.fps,
+            frame_count=self.num_frames,
+            source_chunk_id=self.source_input_id,
+            shape=self.dof_pos.shape,
+            joint_order=",".join(self.joint_names),
+            quat_order=self.quat_order,
+        )
+        data["robot"] = self.robot
+        data.update(self.metadata)
+        return data
 
 
 @dataclass(slots=True)
@@ -239,9 +306,7 @@ class TrackerInput:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.fps = int(self.fps)
-        if self.fps <= 0:
-            raise ValueError(f"fps must be positive, got {self.fps}")
+        self.fps = validate_fps(self.fps)
 
 
 @dataclass(slots=True)
@@ -252,3 +317,8 @@ class TrackerStatus:
     last_frame_idx: int | None = None
     errors: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+GeneratedMotionChunk = GeneratedMotion
+RetargetInputChunk = RetargetInput
+RobotMotionChunk = RobotMotion
