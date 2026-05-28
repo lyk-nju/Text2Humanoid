@@ -59,11 +59,13 @@ def make_tracking_easy_result_to_bfmzero_motion(
         tgt_fps=tgt_fps,
         src_fps=src_fps,
     )
+    # MTE's convert_bmimic.build_bmimic_data already converts xyzw -> wxyz.
     chunk = bfmzero_motion_from_bmimic_data(
         bmimic,
         chunk_id=chunk_id,
         frame_start=frame_start,
         source_joint_order="bmimic",
+        source_quat_order="wxyz",
     )
     return attach_bfmzero_contract_metadata(
         chunk,

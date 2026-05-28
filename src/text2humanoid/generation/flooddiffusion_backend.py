@@ -76,7 +76,7 @@ class FloodDiffusionBackend:
         generation_steps = int(
             request.spec.metadata.get(
                 "generation_steps",
-                request.spec.metadata.get("steps", request.spec.num_frames or 150),
+                request.spec.metadata.get("steps", 150),
             )
         )
         cmd = [

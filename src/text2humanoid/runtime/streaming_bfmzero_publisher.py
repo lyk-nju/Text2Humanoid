@@ -89,6 +89,21 @@ class BFMZeroFrameBuffer:
         with self._condition:
             return len(self._frames) < self.low_watermark_frames
 
+    def reset_frame_origin(self) -> None:
+        """Drain queued frames and clear the validation cursor.
+
+        Demo console reuses the same publisher across Start Stream / Stop
+        Stream cycles.  Without this, the buffer's `_next_frame_idx` keeps
+        the value from the previous stream and the next append (starting
+        from 0) trips the discontinuity guard.
+        """
+        with self._condition:
+            self._frames.clear()
+            self._next_frame_idx = None
+            self.frames_enqueued = 0
+            self.frames_dequeued = 0
+            self._condition.notify_all()
+
     def status(self) -> FutureBufferStatus:
         with self._condition:
             queued = len(self._frames)
@@ -138,6 +153,7 @@ class StreamingBFMZeroPublisher:
     _stop: threading.Event = field(init=False, repr=False)
     _thread: threading.Thread | None = field(init=False, default=None, repr=False)
     _has_published: bool = field(init=False, default=False)
+    _destroyed: bool = field(init=False, default=False)
     frames_published: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
@@ -158,6 +174,11 @@ class StreamingBFMZeroPublisher:
     def needs_refill(self) -> bool:
         return self._buffer.needs_refill()
 
+    def reset_frame_origin(self) -> None:
+        self._buffer.reset_frame_origin()
+        self._has_published = False
+        self.frames_published = 0
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -176,6 +197,20 @@ class StreamingBFMZeroPublisher:
         self._publish_frame(frame)
         return True
 
+    def _next_scheduled_t(self, next_t: float, was_first: bool, dt: float) -> float:
+        """Compute the next scheduled emission time.
+
+        After the first frame's startup_delay sleep, the "next scheduled
+        frame time" tracked by the caller is stale by `startup_delay_sec`
+        — without resetting, the subsequent frames all see sleep_for <= 0
+        and the publisher burst-sends until next_t catches up with wall
+        clock.  BFM-Zero saw the first ~1 second of frames at much higher
+        than 50 Hz.
+        """
+        if was_first:
+            return self.time_fn() + dt
+        return next_t + dt
+
     def _run(self) -> None:
         dt = 1.0 / float(self.fps)
         next_t = self.time_fn()
@@ -184,9 +219,10 @@ class StreamingBFMZeroPublisher:
             if frame is None:
                 next_t = self.time_fn()
                 continue
+            was_first = not self._has_published
             self._publish_frame(frame)
             if self.realtime:
-                next_t += dt
+                next_t = self._next_scheduled_t(next_t, was_first, dt)
                 sleep_for = next_t - self.time_fn()
                 if sleep_for > 0:
                     self.sleep_fn(sleep_for)

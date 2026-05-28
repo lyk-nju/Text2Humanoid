@@ -1,3 +1,17 @@
+"""DEPRECATED for new streaming code.
+
+The streaming pipeline (FloodDiffusionStreamingBackend, StreamingRetargetBridge,
+StreamingTextToBFMZeroRunner) standardized on `GeneratedMotion` and
+`RetargetInput` from `text2humanoid.contracts.pipeline`.  Use those for any
+new producer/consumer and use `nmr_input_chunk_to_retarget_input` /
+`human_motion_chunk_to_generated_motion` to bridge legacy code.
+
+The two classes below remain because the orchestrator path
+(PipelineCoordinator / FloodNetPlannerService / NMRRetargetService) still
+uses them and migrating it is tracked separately under "orchestrator
+streaming调度" in 重构.md.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

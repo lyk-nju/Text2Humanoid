@@ -9,6 +9,13 @@ import torch
 from text2humanoid.contracts.chunks import NMRInputChunk
 from text2humanoid.infra.paths import get_make_tracking_easy_root
 
+# scipy's filtfilt requires len(input) > padlen.  For the 4th-order Butterworth
+# used in MakeTrackingEasy/inference.py:189 (`butter(4, 5/(30/2), btype='low')`),
+# padlen defaults to 3 * max(len(a), len(b)) = 15.  We use 16 to keep one frame
+# of headroom; chunks shorter than this run unfiltered.  MTE's postprocess_g1
+# applies its own internal `T >= 13` gate (MakeTrackingEasy/inference.py:188),
+# so passing a 13-15 frame chunk with apply_filter=True would still get
+# filtered there — but our gate is the stricter / safer one.
 _MIN_FILTER_FRAMES = 16
 
 
@@ -49,8 +56,14 @@ class NMRRetargetService:
         self._device = device
         self._loaded = True
 
-    def retarget_chunk(self, chunk: NMRInputChunk) -> dict[str, Any]:
+    def retarget_chunk(self, chunk: Any) -> dict[str, Any]:
         """Run NMR retarget on a 140D motion tensor.
+
+        Accepts either a legacy `NMRInputChunk` (which carries `motion_140`)
+        or a `RetargetInput` from contracts.pipeline (which carries `motion`).
+        Streaming code is migrating to the latter; orchestrator code still
+        uses the former.  See contracts/chunks.py for the deprecation
+        roadmap.
 
         Prefer MakeTrackingEasy's tensor API when present.  Older checked-out
         copies may not have it, so the fallback mirrors the same per-chunk
@@ -58,7 +71,10 @@ class NMRRetargetService:
         """
         self._load()
         _add_nmr_path()
-        smplx_motion = torch.from_numpy(np.asarray(chunk.motion_140, dtype=np.float32))
+        motion_140 = getattr(chunk, "motion_140", None)
+        if motion_140 is None:
+            motion_140 = chunk.motion  # RetargetInput convention
+        smplx_motion = torch.from_numpy(np.asarray(motion_140, dtype=np.float32))
         effective_apply_filter = self.apply_filter and smplx_motion.shape[0] >= _MIN_FILTER_FRAMES
 
         try:

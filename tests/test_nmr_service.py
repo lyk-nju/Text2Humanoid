@@ -71,3 +71,24 @@ def test_nmr_retarget_keeps_filter_for_chunks_longer_than_filtfilt_padlen(monkey
 
     assert filter_calls == [True]
     assert result["dof"].shape == (16, 29)
+
+
+def test_nmr_retarget_accepts_retarget_input_from_pipeline_contracts(monkeypatch):
+    """Streaming pipeline migrated from NMRInputChunk(.motion_140) to
+    RetargetInput(.motion).  retarget_chunk must accept both."""
+    from text2humanoid.contracts.pipeline import RetargetInput
+
+    filter_calls = []
+    _install_fake_inference(monkeypatch, filter_calls)
+
+    ri = RetargetInput(
+        input_id="streamed",
+        source_motion_id="motion_0",
+        representation="nmr_smplx_140",
+        motion=np.zeros((16, 140), dtype=np.float32),
+        fps=30,
+    )
+    result = _service().retarget_chunk(ri)
+
+    assert filter_calls == [True]
+    assert result["dof"].shape == (16, 29)

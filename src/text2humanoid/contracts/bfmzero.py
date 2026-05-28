@@ -158,11 +158,18 @@ def bfmzero_motion_from_bmimic_data(
     chunk_id: str = "",
     frame_start: int = 0,
     source_joint_order: str = "bmimic",
+    source_quat_order: str = "wxyz",
 ) -> BFMZeroMotionChunk:
     """Convert BFM-Zero data-format npz fields into direct ZMQ motion format.
 
     The BFM-Zero file loader remaps bmimic joint order to Isaac order. ZMQ mode
     bypasses that loader, so this conversion performs the remap explicitly.
+
+    source_quat_order documents the upstream convention.  MakeTrackingEasy's
+    convert_bmimic.build_bmimic_data permutes scipy's xyzw output to wxyz
+    (see MakeTrackingEasy/convert_bmimic.py:96), so callers from MTE pass
+    "wxyz".  Any other producer must specify its order explicitly — otherwise
+    a silent (w<->x mixup) bug propagates all the way to BFM-Zero policy.
     """
 
     fps_raw = np.asarray(data["fps"])
@@ -181,6 +188,12 @@ def bfmzero_motion_from_bmimic_data(
     body_lin_vel_w = np.asarray(data["body_lin_vel_w"], dtype=np.float32)
     body_ang_vel_w = np.asarray(data["body_ang_vel_w"], dtype=np.float32)
 
+    root_quat = body_quat_w[:, 0, :]
+    if source_quat_order == "xyzw":
+        root_quat = root_quat[:, [3, 0, 1, 2]]
+    elif source_quat_order != "wxyz":
+        raise ValueError("source_quat_order must be 'wxyz' or 'xyzw'")
+
     return BFMZeroMotionChunk(
         chunk_id=chunk_id,
         fps=fps,
@@ -188,12 +201,13 @@ def bfmzero_motion_from_bmimic_data(
         joint_pos=joint_pos,
         joint_vel=joint_vel,
         root_pos=body_pos_w[:, 0, :],
-        root_quat=body_quat_w[:, 0, :],
+        root_quat=root_quat,
         root_lin_vel_w=body_lin_vel_w[:, 0, :],
         root_ang_vel_w=body_ang_vel_w[:, 0, :],
         metadata={
             "source_format": "bfmzero_data_npz",
             "source_joint_order": source_joint_order,
+            "source_quat_order": source_quat_order,
             "runtime_joint_order": "isaac",
             "root_quat_order": "wxyz",
         },

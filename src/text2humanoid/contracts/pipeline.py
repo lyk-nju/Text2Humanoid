@@ -322,3 +322,37 @@ class TrackerStatus:
 GeneratedMotionChunk = GeneratedMotion
 RetargetInputChunk = RetargetInput
 RobotMotionChunk = RobotMotion
+
+
+def human_motion_chunk_to_generated_motion(chunk: Any) -> GeneratedMotion:
+    """Adapter: contracts.chunks.HumanMotionChunk -> GeneratedMotion.
+
+    Lets legacy orchestrator code that still produces HumanMotionChunk
+    flow into streaming-style consumers that expect GeneratedMotion.
+    """
+    return GeneratedMotion(
+        motion_id=chunk.chunk_id,
+        representation="humanml3d_263",
+        motion=chunk.motion_263,
+        fps=chunk.fps,
+        start_time=chunk.start_time,
+        metadata=dict(chunk.metadata),
+    )
+
+
+def nmr_input_chunk_to_retarget_input(chunk: Any) -> RetargetInput:
+    """Adapter: contracts.chunks.NMRInputChunk -> RetargetInput.
+
+    The orchestrator's PipelineCoordinator still builds NMRInputChunk via
+    `human_chunk_to_nmr_input`.  Use this when feeding such a chunk into
+    a streaming-style retarget consumer.
+    """
+    return RetargetInput(
+        input_id=chunk.chunk_id,
+        source_motion_id=chunk.metadata.get("source_chunk_id", chunk.chunk_id),
+        representation="nmr_smplx_140",
+        motion=chunk.motion_140,
+        fps=chunk.fps,
+        start_time=chunk.start_time,
+        metadata=dict(chunk.metadata),
+    )

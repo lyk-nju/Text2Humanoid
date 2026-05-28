@@ -12,8 +12,14 @@ import numpy as np
 import yaml
 
 from text2humanoid.contracts.bfmzero import BFMZeroMotionChunk
-from text2humanoid.contracts.chunks import NMRInputChunk
-from text2humanoid.contracts.pipeline import GenerateRequest, GenerateSpec, GeneratedMotion, MultimodalInput, TextInput
+from text2humanoid.contracts.pipeline import (
+    GenerateRequest,
+    GenerateSpec,
+    GeneratedMotion,
+    MultimodalInput,
+    RetargetInput,
+    TextInput,
+)
 from text2humanoid.demo.console_controller import StreamJobRequest
 from text2humanoid.infra.streaming_config import load_streaming_timing_config
 from text2humanoid.retarget.bfmzero_adapter import attach_bfmzero_contract_metadata
@@ -65,6 +71,30 @@ def _default_convert_retarget_to_bfmzero(*args, **kwargs):
     from text2humanoid.retarget.bfmzero_adapter import make_tracking_easy_result_to_bfmzero_motion
 
     return make_tracking_easy_result_to_bfmzero_motion(*args, **kwargs)
+
+
+def _yaw_from_quat_wxyz(quat: np.ndarray) -> float:
+    """Yaw (rotation about world Z) from a wxyz quaternion.  Z-up convention."""
+    w, x, y, z = (float(v) for v in quat)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return float(np.arctan2(siny_cosp, cosy_cosp))
+
+
+def _quat_mul_wxyz_batch(q_left: np.ndarray, quats: np.ndarray) -> np.ndarray:
+    """Left-multiply each (T, 4) wxyz quaternion by a single wxyz q_left."""
+    lw, lx, ly, lz = (float(v) for v in q_left)
+    qw = quats[:, 0]
+    qx = quats[:, 1]
+    qy = quats[:, 2]
+    qz = quats[:, 3]
+    out = np.empty_like(quats)
+    out[:, 0] = lw * qw - lx * qx - ly * qy - lz * qz
+    out[:, 1] = lw * qx + lx * qw + ly * qz - lz * qy
+    out[:, 2] = lw * qy - lx * qz + ly * qw + lz * qx
+    out[:, 3] = lw * qz + lx * qy - ly * qx + lz * qw
+    norm = np.linalg.norm(out, axis=1, keepdims=True)
+    return (out / np.clip(norm, 1e-8, None)).astype(np.float32, copy=False)
 
 
 def _slice_bfmzero_chunk(chunk: BFMZeroMotionChunk, start: int, frame_start: int, chunk_id: str) -> BFMZeroMotionChunk:
@@ -125,12 +155,27 @@ class StreamingRetargetBridge:
     convert_retarget_to_bfmzero: Callable[..., BFMZeroMotionChunk] = _default_convert_retarget_to_bfmzero
     _context_263: np.ndarray = field(init=False, repr=False)
     _next_frame_idx: int = field(init=False, default=0)
+    _world_root_xy: np.ndarray | None = field(init=False, default=None, repr=False)
+    _world_yaw: float | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         self.context_frames = max(0, int(self.context_frames))
         self.retarget_fps = float(self.retarget_fps)
         self.output_fps = float(self.output_fps)
         self._context_263 = np.zeros((0, 263), dtype=np.float32)
+
+    def reset(self) -> None:
+        """Drop streaming state so the next convert() starts a fresh session.
+
+        Demo console caches a single runner across Start Stream / Stop Stream
+        cycles.  Without an explicit reset the bridge keeps _next_frame_idx
+        and _world_root_xy from the previous run and the publisher buffer
+        rejects the discontinuity.
+        """
+        self._context_263 = np.zeros((0, 263), dtype=np.float32)
+        self._next_frame_idx = 0
+        self._world_root_xy = None
+        self._world_yaw = None
 
     def convert(self, motion: GeneratedMotion) -> BFMZeroMotionChunk:
         new_263 = np.asarray(motion.motion, dtype=np.float32)
@@ -158,14 +203,16 @@ class StreamingRetargetBridge:
                 "duration_sec": float(motion_140_np.shape[0]) / float(self.retarget_fps),
             }
         )
-        nmr_chunk = NMRInputChunk(
-            chunk_id=motion.motion_id,
-            start_time=max(0.0, motion.start_time - self._context_263.shape[0] / float(motion.fps)),
+        retarget_input = RetargetInput(
+            input_id=motion.motion_id,
+            source_motion_id=motion.motion_id,
+            representation="nmr_smplx_140",
+            motion=motion_140_np,
             fps=int(round(self.retarget_fps)),
-            motion_140=motion_140_np,
+            start_time=max(0.0, motion.start_time - self._context_263.shape[0] / float(motion.fps)),
             metadata=nmr_metadata,
         )
-        result = self.retarget.retarget_chunk(nmr_chunk)
+        result = self.retarget.retarget_chunk(retarget_input)
         full_chunk = self.convert_retarget_to_bfmzero(
             result,
             xml_path=self.xml_path,
@@ -176,9 +223,25 @@ class StreamingRetargetBridge:
             tgt_fps=float(self.output_fps),
         )
 
-        new_seconds = new_263.shape[0] / float(motion.fps)
-        new_output_frames = max(1, int(round(new_seconds * float(full_chunk.fps))))
-        tail_start = max(0, full_chunk.num_frames - new_output_frames)
+        # tail computed by frame ratio, not seconds.  convert_to_bmimic's
+        # resample produces round(duration*fps)+1 frames so a duration*fps
+        # estimate is off by one whenever duration > 0.
+        window_in = int(window_263.shape[0])
+        new_in = int(new_263.shape[0])
+        if window_in <= 0 or new_in <= 0:
+            tail_start = 0
+        else:
+            new_out = max(1, int(round(full_chunk.num_frames * new_in / window_in)))
+            tail_start = max(0, full_chunk.num_frames - new_out)
+
+        # SE(2) re-align: MTE + convert_to_bmimic emit each chunk with root
+        # XY starting near (0,0) and yaw canonicalized.  To stitch chunks
+        # into a continuous world-frame stream, rotate/translate the whole
+        # chunk so that frame `tail_start` matches the previous tail's
+        # world pose, then take the tail slice.
+        if self._world_root_xy is not None and self._world_yaw is not None:
+            full_chunk = self._align_to_world(full_chunk, tail_start)
+
         out = _slice_bfmzero_chunk(full_chunk, tail_start, self._next_frame_idx, motion.motion_id)
         attach_bfmzero_contract_metadata(
             out,
@@ -197,11 +260,55 @@ class StreamingRetargetBridge:
             }
         )
         self._next_frame_idx = out.frame_end
+        if out.num_frames > 0:
+            self._world_root_xy = out.root_pos[-1, :2].astype(np.float32).copy()
+            self._world_yaw = float(_yaw_from_quat_wxyz(out.root_quat[-1]))
         if self.context_frames > 0:
             self._context_263 = window_263[-self.context_frames :].copy()
         else:
             self._context_263 = np.zeros((0, 263), dtype=np.float32)
         return out
+
+    def _align_to_world(self, chunk: BFMZeroMotionChunk, anchor_idx: int) -> BFMZeroMotionChunk:
+        if chunk.num_frames == 0 or anchor_idx >= chunk.num_frames:
+            return chunk
+        anchor_xy = chunk.root_pos[anchor_idx, :2].astype(np.float32)
+        anchor_yaw = float(_yaw_from_quat_wxyz(chunk.root_quat[anchor_idx]))
+        target_xy = np.asarray(self._world_root_xy, dtype=np.float32)
+        target_yaw = float(self._world_yaw or 0.0)
+        yaw_delta = target_yaw - anchor_yaw
+        cos_d = float(np.cos(yaw_delta))
+        sin_d = float(np.sin(yaw_delta))
+        rot = np.asarray([[cos_d, -sin_d], [sin_d, cos_d]], dtype=np.float32)
+
+        new_root_pos = chunk.root_pos.copy()
+        rel_xy = new_root_pos[:, :2] - anchor_xy
+        new_root_pos[:, :2] = rel_xy @ rot.T + target_xy
+
+        new_lin = chunk.root_lin_vel_w.copy()
+        new_lin[:, :2] = chunk.root_lin_vel_w[:, :2] @ rot.T
+
+        new_ang = chunk.root_ang_vel_w.copy()
+        new_ang[:, :2] = chunk.root_ang_vel_w[:, :2] @ rot.T
+
+        q_delta = np.asarray(
+            [np.cos(yaw_delta / 2.0), 0.0, 0.0, np.sin(yaw_delta / 2.0)],
+            dtype=np.float32,
+        )
+        new_root_quat = _quat_mul_wxyz_batch(q_delta, chunk.root_quat)
+
+        return BFMZeroMotionChunk(
+            chunk_id=chunk.chunk_id,
+            fps=chunk.fps,
+            frame_start=chunk.frame_start,
+            joint_pos=chunk.joint_pos,
+            joint_vel=chunk.joint_vel,
+            root_pos=new_root_pos,
+            root_quat=new_root_quat,
+            root_lin_vel_w=new_lin,
+            root_ang_vel_w=new_ang,
+            metadata=dict(chunk.metadata),
+        )
 
 
 @dataclass(slots=True)
@@ -257,6 +364,16 @@ class StreamingTextToBFMZeroRunner:
         should_stop: Callable[[], bool],
         current_text: Callable[[], str],
     ) -> int:
+        # Demo console caches the runner across Start/Stop cycles.  Reset
+        # bridge state (_next_frame_idx, world pose, 263D context) and
+        # publisher state (queued frames, validation cursor) so a fresh
+        # session starts from frame 0 without tripping the publisher's
+        # discontinuity guard.
+        if hasattr(self.retarget_bridge, "reset"):
+            self.retarget_bridge.reset()
+        if hasattr(self.publisher, "reset_frame_origin"):
+            self.publisher.reset_frame_origin()
+
         if hasattr(self.retarget_bridge, "context_frames"):
             self.retarget_bridge.context_frames = max(0, int(request.context_frames))
         if hasattr(self.retarget_bridge, "output_fps"):
